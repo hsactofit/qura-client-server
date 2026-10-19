@@ -1,0 +1,72 @@
+[project]
+name = "qura-client-server"
+version = "0.1.0"
+description = "Qura Insurance Client Portal backend (FastAPI + PostgreSQL + SQLAlchemy 2.x + Alembic)"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = { text = "Proprietary" }
+
+# Pinned to versions verified current on PyPI (2026-10-20).
+# SQLAlchemy 2.1 makes the asyncio/greenlet stack opt-in via the [asyncio] extra
+# and defaults the bare postgresql:// driver to psycopg3; Qura uses asyncpg
+# explicitly through the postgresql+asyncpg:// URL, so the extra is required.
+dependencies = [
+    "fastapi==0.149.0",
+    "uvicorn[standard]==0.54.0",
+    "sqlalchemy[asyncio]==2.1.5",
+    "alembic==1.20.0",
+    "asyncpg==0.32.0",
+    "pydantic==2.13.4",
+    "pydantic-settings==2.15.0",
+    "python-json-logger==4.0.0",
+    # Argon2id password hashing (Phase 3). Maintained, pure-binding library.
+    "argon2-cffi==25.1.0",
+    # Strict email syntax validation for registration/login schemas.
+    "email-validator==2.3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.4.2",
+    "pytest-asyncio==1.2.0",
+    "httpx==0.28.1",
+    "ruff==0.14.1",
+    "mypy==1.18.2",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["app", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "C4", "SIM"]
+# B008: Depends(...) in argument defaults is the standard FastAPI idiom.
+# UP046: keep Generic[T] for Pydantic generic-model compatibility.
+ignore = ["B008", "UP046"]
+
+[tool.ruff.lint.per-file-ignores]
+# Generated/explicit migrations favour one readable op per line; the column
+# definitions routinely exceed the line limit without harm.
+"alembic/versions/*.py" = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+plugins = ["pydantic.mypy"]
+warn_unused_ignores = true
+warn_redundant_casts = true
+disallow_untyped_defs = true
+ignore_missing_imports = true

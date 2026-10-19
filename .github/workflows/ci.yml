@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install .[dev]
+
+      - name: Lint (ruff)
+        run: ruff check app tests alembic
+
+      - name: Type check (mypy)
+        run: mypy app
+
+      - name: Guard against Arham coupling
+        shell: bash
+        run: |
+          # Phase 1 must stay free of Arham names, hosts and shared secrets.
+          if grep -rniE 'arham|arhamsecure|arham_client_|backend_users' app tests; then
+            echo "::error::Found a forbidden Arham reference in Qura source."
+            exit 1
+          fi
+
+      - name: Run tests
+        run: pytest
