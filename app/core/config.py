@@ -35,6 +35,7 @@ _SENSITIVE_FIELDS: frozenset[str] = frozenset(
         "session_secret",
         "database_url",
         "database_password",
+        "openai_api_key",
     }
 )
 
@@ -90,6 +91,31 @@ class Settings(BaseSettings):
     # Explicit allow-list only; no wildcard when credentials are enabled.
     cors_allow_origins: list[str] = Field(default_factory=list)
     cors_allow_credentials: bool = True
+
+    # --- Document storage (private, Qura-owned) ----------------------------
+    # Uploaded policy/claim documents are written under this directory and are
+    # NEVER served from a public path. Downloads go through an authenticated,
+    # ownership-checked endpoint that streams the bytes. ``storage_key`` in
+    # ``stored_files`` is a path relative to this root; the download layer
+    # resolves it and refuses anything escaping the root (path-traversal guard).
+    storage_dir: str = Field(
+        default="var/storage",
+        description="Private filesystem root for uploaded documents.",
+    )
+    # Hard cap for a single uploaded document (bytes). Default 15 MB, matching
+    # the frontend's client-side limit.
+    upload_max_bytes: int = 15 * 1024 * 1024
+
+    # --- AI policy extraction (OpenAI-compatible) --------------------------
+    # Extraction is OPTIONAL. When no API key is configured, the extract/upload
+    # endpoints report extraction as unavailable instead of inventing data;
+    # upload still persists the user-provided fields. All values are Qura-owned
+    # and independent of the reference backend's variable names.
+    openai_api_key: str = ""
+    openai_api_base: str = "https://api.openai.com/v1"
+    openai_model_name: str = "gpt-4.1"
+    # Upper bound on how long an extraction HTTP call may take (seconds).
+    openai_timeout_seconds: int = 60
 
     # --- Logging -----------------------------------------------------------
     log_level: str = "INFO"

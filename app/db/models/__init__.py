@@ -14,6 +14,7 @@ Entity groups:
 - engagement:    Notification, Announcement
 - support:       SupportTicket, TicketMessage
 - files:         StoredFile
+- kyc:           KycDocument
 - reference:     MasterData
 - admin:         AuditLog
 """
@@ -34,6 +35,7 @@ from app.db.models.identity import (
     UserProfile,
     UserSetting,
 )
+from app.db.models.kyc import KycDocument
 from app.db.models.policies import Policy
 from app.db.models.reference import MasterData
 from app.db.models.support import SupportTicket, TicketMessage
@@ -57,6 +59,7 @@ __all__ = [
     "SupportTicket",
     "TicketMessage",
     "StoredFile",
+    "KycDocument",
     "MasterData",
     "AuditLog",
 ]

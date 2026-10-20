@@ -17,7 +17,7 @@ import app.db.models as models
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 
-from tests.test_models_metadata import EXPECTED_TABLES
+from tests.test_models_metadata import EXPECTED_TABLES, TABLES_IN_INITIAL_MIGRATION
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -40,6 +40,16 @@ def test_initial_revision_is_base() -> None:
     assert base_revs == ["0001_initial"]
     rev = script.get_revision("0001_initial")
     assert rev.down_revision is None
+
+
+def test_migration_chain_is_linear() -> None:
+    """The migrations form a single unbroken 0001 -> ... -> head chain."""
+    script = ScriptDirectory.from_config(_alembic_config())
+    revs = list(script.walk_revisions())  # head-first
+    # Each revision's down_revision must point at the next one in the walk.
+    for newer, older in zip(revs, revs[1:], strict=False):
+        assert newer.down_revision == older.revision
+    assert revs[-1].revision == "0001_initial"
 
 
 class _RecordingOp:
@@ -75,39 +85,61 @@ class _RecordingOp:
         pass
 
 
-def _load_initial_module():  # type: ignore[no-untyped-def]
+def _load_migration_module(filename: str, mod_name: str):  # type: ignore[no-untyped-def]
     import importlib.util
 
-    path = (
-        PROJECT_ROOT
-        / "alembic"
-        / "versions"
-        / "20261020_0001_0001_initial_schema.py"
-    )
-    spec = importlib.util.spec_from_file_location("qura_initial_migration", path)
+    path = PROJECT_ROOT / "alembic" / "versions" / filename
+    spec = importlib.util.spec_from_file_location(mod_name, path)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-def test_upgrade_creates_all_model_tables(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def _load_initial_module():  # type: ignore[no-untyped-def]
+    return _load_migration_module(
+        "20261020_0001_0001_initial_schema.py", "qura_initial_migration"
+    )
+
+
+# (filename, module name) for every create_table migration, in apply order.
+# Backfill-only migrations (e.g. 0002) create no tables and are omitted here.
+_TABLE_MIGRATIONS = [
+    ("20261020_0001_0001_initial_schema.py", "qura_migration_0001"),
+    ("20261020_0003_0003_kyc_documents.py", "qura_migration_0003"),
+]
+
+
+def _collect_created(monkeypatch) -> _RecordingOp:  # type: ignore[no-untyped-def]
+    """Run every table-creating migration's upgrade() against the recorder."""
+    recorder = _RecordingOp()
+    for filename, mod_name in _TABLE_MIGRATIONS:
+        module = _load_migration_module(filename, mod_name)
+        monkeypatch.setattr(module, "op", recorder)
+        module.upgrade()
+    return recorder
+
+
+def test_initial_upgrade_creates_initial_tables(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     module = _load_initial_module()
     recorder = _RecordingOp()
     monkeypatch.setattr(module, "op", recorder)
 
     module.upgrade()
 
+    assert set(recorder.created) == TABLES_IN_INITIAL_MIGRATION
+
+
+def test_all_migrations_create_all_model_tables(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Across every migration, the created tables equal the model table set."""
+    recorder = _collect_created(monkeypatch)
     assert set(recorder.created) == EXPECTED_TABLES
     assert set(recorder.created) == set(models.Base.metadata.tables)
 
 
 def test_migration_columns_match_models(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    """Every model column exists in the migration, and vice versa (offline)."""
-    module = _load_initial_module()
-    recorder = _RecordingOp()
-    monkeypatch.setattr(module, "op", recorder)
-    module.upgrade()
+    """Every model column exists in the migrations, and vice versa (offline)."""
+    recorder = _collect_created(monkeypatch)
 
     for table_name, table in models.Base.metadata.tables.items():
         model_cols = {c.name for c in table.columns}
@@ -126,7 +158,7 @@ def test_downgrade_drops_all_model_tables(monkeypatch) -> None:  # type: ignore[
 
     module.downgrade()
 
-    assert set(recorder.dropped) == EXPECTED_TABLES
+    assert set(recorder.dropped) == TABLES_IN_INITIAL_MIGRATION
 
 
 def test_downgrade_is_reverse_dependency_order(monkeypatch) -> None:  # type: ignore[no-untyped-def]

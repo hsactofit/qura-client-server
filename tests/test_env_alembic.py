@@ -12,4 +12,4 @@ def test_alembic_env_uses_qura_metadata() -> None:
 
     # Importing models registers everything; the env uses this same metadata.
     assert set(Base.metadata.tables) == set(models.Base.metadata.tables)
-    assert len(Base.metadata.tables) == 18
+    assert len(Base.metadata.tables) == 19
