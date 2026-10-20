@@ -24,6 +24,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from sqlalchemy import (
+    CheckConstraint,
     Date,
     ForeignKey,
     Index,
@@ -84,6 +85,15 @@ class Policy(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     policy_source: Mapped[str] = mapped_column(
         String(20), nullable=False, server_default=text("'uploaded'")
     )
+    # Provenance of the stored policy facts, kept separate from ``status``
+    # (the coverage lifecycle: active/expired/...). This distinguishes data a
+    # user typed or let AI fill (``self_reported``), data the user has reviewed
+    # and confirmed (``user_confirmed``), and data an authoritative insurer
+    # integration verified (``insurer_verified``). A manual upload is NEVER
+    # insurer_verified — that transition requires an authoritative source.
+    verification_status: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default=text("'self_reported'")
+    )
     proposal_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     external_policy_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     product_enum: Mapped[str | None] = mapped_column(String(100), nullable=True)
@@ -108,6 +118,11 @@ class Policy(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
 
     __table_args__ = (
+        CheckConstraint(
+            "verification_status IN "
+            "('self_reported', 'user_confirmed', 'insurer_verified')",
+            name="policies_verification_status_valid",
+        ),
         # policy_number unique only when present (platform policies start null).
         Index(
             "uq_policies_policy_number",

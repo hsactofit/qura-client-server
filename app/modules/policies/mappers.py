@@ -38,10 +38,16 @@ def policy_to_dict(policy: Policy) -> dict[str, Any]:
         "benefits": policy.benefits or [],
         "exclusions": policy.exclusions or [],
         "policy_source": policy.policy_source,
+        # Provenance of the facts shown: self_reported | user_confirmed |
+        # insurer_verified. The UI uses this to label unverified data honestly.
+        "verification_status": policy.verification_status,
         "proposal_id": policy.proposal_id,
         "external_policy_id": policy.external_policy_id,
         "product_enum": policy.product_enum,
         "document_original_name": policy.document_original_name,
+        # Whether a private document is attached. There is NO public URL; the
+        # file is only reachable via the authenticated download endpoint.
+        "has_document": policy.document_file_id is not None,
         # Read by the UI but unbacked by the schema; safe empty defaults.
         "covered_members": [],
         "created_at": policy.created_at.isoformat() if policy.created_at else None,

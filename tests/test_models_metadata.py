@@ -9,7 +9,10 @@ from __future__ import annotations
 import app.db.models as models
 from app.db.base import Base
 
-EXPECTED_TABLES = {
+# Tables created by the initial migration (0001). Kept as its own set so the
+# initial-migration tests can assert against exactly what 0001 creates, while
+# later migrations (e.g. 0003 adds kyc_documents) introduce additional tables.
+TABLES_IN_INITIAL_MIGRATION = {
     "users",
     "user_profiles",
     "user_settings",
@@ -28,6 +31,12 @@ EXPECTED_TABLES = {
     "stored_files",
     "master_data",
     "audit_logs",
+}
+
+# The full set of tables the models declare today (initial migration plus every
+# table added by a later migration).
+EXPECTED_TABLES = TABLES_IN_INITIAL_MIGRATION | {
+    "kyc_documents",  # added in migration 0003
 }
 
 

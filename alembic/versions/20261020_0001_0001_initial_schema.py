@@ -175,6 +175,7 @@ def upgrade() -> None:
         sa.Column("benefits", JSONB, server_default=sa.text("'[]'::jsonb"), nullable=False),
         sa.Column("exclusions", JSONB, server_default=sa.text("'[]'::jsonb"), nullable=False),
         sa.Column("policy_source", sa.String(length=20), server_default=sa.text("'uploaded'"), nullable=False),
+        sa.Column("verification_status", sa.String(length=20), server_default=sa.text("'self_reported'"), nullable=False),
         sa.Column("proposal_id", sa.String(length=100), nullable=True),
         sa.Column("external_policy_id", sa.String(length=100), nullable=True),
         sa.Column("product_enum", sa.String(length=100), nullable=True),
@@ -182,6 +183,10 @@ def upgrade() -> None:
         sa.Column("document_file_id", UUID, nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.CheckConstraint(
+            "verification_status IN ('self_reported', 'user_confirmed', 'insurer_verified')",
+            name="policies_verification_status_valid",
+        ),
         sa.ForeignKeyConstraint(
             ["user_id"], ["users.id"], name="fk_policies_user_id_users", ondelete="RESTRICT"
         ),

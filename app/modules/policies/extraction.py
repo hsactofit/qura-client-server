@@ -1,0 +1,228 @@
+"""AI-assisted policy document extraction.
+
+This turns an uploaded policy document into a set of *suggested* fields for the
+user to review. It is strictly a convenience: extraction is NEVER treated as
+authoritative, and the result is only ever ``verification_status = self_reported``
+until a user confirms it.
+
+Key guarantees:
+- When no provider is configured (``QURA_OPENAI_API_KEY`` empty), extraction is
+  reported as UNAVAILABLE via :class:`ExtractionUnavailable`. We never fabricate
+  values to simulate success.
+- Any field the model cannot determine is ``None`` (explicit missing state),
+  never a guess.
+- Secrets, raw document bytes, and model stack traces are kept out of logs and
+  out of error messages returned to the client.
+
+The provider is an OpenAI-compatible Chat Completions / Responses API, selected
+to match the reference backend's approach while using Qura-owned configuration.
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+import logging
+from typing import Any
+
+import httpx
+
+from app.core.config import Settings
+from app.core.uploads import DetectedFile
+
+logger = logging.getLogger("qura.policies.extraction")
+
+# The canonical fields we ask the model for. These map 1:1 onto the columns the
+# upload endpoint persists, plus a few review-only hints the UI can show.
+EXTRACTION_FIELDS = (
+    "policy_number",
+    "policy_type",
+    "insurer_name",
+    "coverage_amount",
+    "premium_amount",
+    "premium_frequency",
+    "start_date",
+    "end_date",
+    "nominee_name",
+    "nominee_relationship",
+)
+
+_MAX_TEXT_CHARS = 8000
+_MAX_OUTPUT_TOKENS = 4000
+
+_SYSTEM_PROMPT = """
+You are an insurance policy data extractor for Indian insurance documents.
+Extract structured data from the provided policy document and return ONLY a valid
+JSON object. Use null for any field you cannot find with confidence. Never guess.
+
+Return ONLY this JSON shape (no markdown, no commentary):
+{
+  "policy_number": string | null,
+  "policy_type": "health" | "motor" | "life" | "travel" | "home" | "business" | "other" | null,
+  "insurer_name": string | null,
+  "coverage_amount": number | null,
+  "premium_amount": number | null,
+  "premium_frequency": "annual" | "semi-annual" | "quarterly" | "monthly" | "one-time" | null,
+  "start_date": "YYYY-MM-DD" | null,
+  "end_date": "YYYY-MM-DD" | null,
+  "nominee_name": string | null,
+  "nominee_relationship": string | null
+}
+
+Rules:
+- Monetary amounts as plain numbers: no currency symbols, commas, or spaces.
+- Dates in YYYY-MM-DD. "Dec 01, 2025" -> "2025-12-01".
+- coverage_amount is the sum insured / sum assured.
+- premium_amount is the total premium inclusive of taxes when available.
+- Output must be a single JSON object and nothing else.
+""".strip()
+
+
+class ExtractionError(RuntimeError):
+    """Extraction was attempted but failed (bad document, provider error)."""
+
+
+class ExtractionUnavailable(ExtractionError):
+    """No extraction provider is configured, so extraction cannot run."""
+
+
+def is_configured(settings: Settings) -> bool:
+    return bool(settings.openai_api_key)
+
+
+def _secret_fingerprint(api_key: str) -> str:
+    if not api_key:
+        return "none"
+    if len(api_key) <= 8:
+        return "***"
+    return f"{api_key[:4]}...{api_key[-4:]}"
+
+
+def empty_result() -> dict[str, Any]:
+    """A fully-null extraction result (explicit missing fields, no fabrication)."""
+    return dict.fromkeys(EXTRACTION_FIELDS)
+
+
+def _parse_json_response(content: str) -> dict[str, Any]:
+    content = content.strip()
+    if content.startswith("```"):
+        lines = content.split("\n")[1:]
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        content = "\n".join(lines).strip()
+    parsed = json.loads(content)
+    if not isinstance(parsed, dict):
+        raise ExtractionError("Model did not return a JSON object")
+    return parsed
+
+
+def _normalise(raw: dict[str, Any]) -> dict[str, Any]:
+    """Keep only known fields; coerce blanks to None. Never invents values."""
+    result = empty_result()
+    for field in EXTRACTION_FIELDS:
+        value = raw.get(field)
+        if value in ("", [], {}):
+            value = None
+        result[field] = value
+    return result
+
+
+def _extract_pdf_text(data: bytes) -> str:
+    """Local text extraction for digital PDFs (no AI, no network)."""
+    import io
+
+    from pypdf import PdfReader
+
+    try:
+        reader = PdfReader(io.BytesIO(data))
+        pages = [(page.extract_text() or "") for page in reader.pages]
+    except Exception as exc:  # noqa: BLE001 - malformed PDF
+        logger.warning("Local PDF text extraction failed: %s", type(exc).__name__)
+        return ""
+    return "\n\n".join(p for p in pages if p.strip())[:_MAX_TEXT_CHARS]
+
+
+async def _chat_completion(
+    settings: Settings, messages: list[dict[str, Any]]
+) -> dict[str, Any]:
+    base = settings.openai_api_base.rstrip("/")
+    headers = {"Authorization": f"Bearer {settings.openai_api_key}"}
+    body = {
+        "model": settings.openai_model_name,
+        "messages": messages,
+        "temperature": 0,
+        "max_tokens": _MAX_OUTPUT_TOKENS,
+        "response_format": {"type": "json_object"},
+    }
+    async with httpx.AsyncClient(timeout=settings.openai_timeout_seconds) as client:
+        resp = await client.post(
+            f"{base}/chat/completions", headers=headers, json=body
+        )
+    if not resp.is_success:
+        # Log status only; never the body (may echo document content/keys).
+        logger.warning(
+            "AI extraction HTTP %s (model=%s, key=%s)",
+            resp.status_code,
+            settings.openai_model_name,
+            _secret_fingerprint(settings.openai_api_key),
+        )
+        raise ExtractionError("The extraction service returned an error")
+    payload = resp.json()
+    try:
+        content = payload["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise ExtractionError("The extraction service returned no content") from exc
+    return _parse_json_response(content)
+
+
+async def extract_policy(
+    settings: Settings, *, data: bytes, detected: DetectedFile
+) -> dict[str, Any]:
+    """Extract suggested policy fields from a document.
+
+    Raises :class:`ExtractionUnavailable` when no provider is configured and
+    :class:`ExtractionError` on any extraction failure. Callers decide how to
+    surface these; this function never returns fabricated data.
+    """
+    if not is_configured(settings):
+        raise ExtractionUnavailable("Policy extraction is not configured")
+
+    messages: list[dict[str, Any]]
+    if detected.content_type == "application/pdf":
+        text = _extract_pdf_text(data)
+        if text:
+            messages = [
+                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "user", "content": f"Policy document text:\n\n{text}"},
+            ]
+        else:
+            # Scanned/textless PDF: fall back to sending it as an image part is
+            # not supported by chat PDFs here, so report a clear, honest error
+            # rather than returning empty data silently.
+            raise ExtractionError(
+                "This looks like a scanned PDF with no extractable text. "
+                "Enter the policy details manually."
+            )
+    else:
+        b64 = base64.b64encode(data).decode()
+        data_url = f"data:{detected.content_type};base64,{b64}"
+        messages = [
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Extract the policy details."},
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                ],
+            },
+        ]
+
+    try:
+        raw = await _chat_completion(settings, messages)
+    except ExtractionError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - network/JSON failure
+        logger.warning("AI extraction failed: %s", type(exc).__name__)
+        raise ExtractionError("Could not extract details from the document") from exc
+
+    return _normalise(raw)

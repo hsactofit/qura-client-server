@@ -83,6 +83,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from app.modules.policies.router import router as policies_router
     from app.modules.profile.router import router as profile_router
     from app.modules.reference.router import router as reference_router
+    from app.modules.rm.router import router as rm_router
     from app.modules.support.router import router as support_router
     from app.modules.transactions.router import router as transactions_router
 
@@ -99,6 +100,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(notifications_router, prefix=api)
     app.include_router(support_router, prefix=api)
     app.include_router(reference_router, prefix=api)
+    app.include_router(rm_router, prefix=api)
 
     return app
 

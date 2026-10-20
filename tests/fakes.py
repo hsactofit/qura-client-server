@@ -23,6 +23,7 @@ from app.db.models.assets import Asset
 from app.db.models.claims import Claim, ClaimDocument
 from app.db.models.engagement import Announcement, Notification
 from app.db.models.family import FamilyMember
+from app.db.models.files import StoredFile
 from app.db.models.identity import (
     Invite,
     PasswordResetToken,
@@ -30,6 +31,7 @@ from app.db.models.identity import (
     UserProfile,
     UserSetting,
 )
+from app.db.models.kyc import KycDocument
 from app.db.models.policies import Policy
 from app.db.models.reference import MasterData
 from app.db.models.support import SupportTicket, TicketMessage
@@ -47,6 +49,7 @@ _MODEL_TYPES = [
     User, UserProfile, UserSetting, Invite, PasswordResetToken,
     Policy, Asset, FamilyMember, Claim, ClaimDocument, Transaction,
     Notification, Announcement, SupportTicket, TicketMessage, MasterData,
+    StoredFile, KycDocument,
 ]
 
 _OP_MAP = {
