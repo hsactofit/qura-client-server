@@ -105,6 +105,29 @@ def test_csrf_mismatch_rejected(db_client, store) -> None:
     assert resp.status_code == 403
 
 
+def test_csrf_missing_header_rejected(db_client, store) -> None:
+    # Authenticated (session cookie present) mutating request with NO
+    # X-CSRF-Token header at all must be rejected by the double-submit check.
+    _seed_user(store, email="c@quramail.io")
+    _signin(db_client, "c@quramail.io")
+    resp = db_client.post("/api/client/auth/signout")
+    assert resp.status_code == 403
+    assert "CSRF" in resp.json()["message"]
+
+
+def test_csrf_missing_cookie_rejected(db_client, store) -> None:
+    # Session cookie present but the CSRF cookie removed: even a supplied header
+    # cannot satisfy the double-submit check without the matching cookie.
+    _seed_user(store, email="c@quramail.io")
+    signin = _signin(db_client, "c@quramail.io")
+    csrf = signin.json()["data"]["csrf_token"]
+    db_client.cookies.delete("qura_client_csrf")
+    resp = db_client.post(
+        "/api/client/auth/signout", headers={"X-CSRF-Token": csrf}
+    )
+    assert resp.status_code == 403
+
+
 # --- forgot / reset -------------------------------------------------------
 
 
