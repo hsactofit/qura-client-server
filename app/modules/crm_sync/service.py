@@ -13,6 +13,8 @@ other's, so neither can corrupt the other. This module is the portal's half:
 - **Advisor replies** to client requests (``crm.activities`` of type
   ``CLIENT_REPLY``) become ticket messages.
 - **Request status** follows the CRM task the request turned into.
+- **Claims** filed on the portal follow the CRM claim's status (with notes in
+  the claim timeline and a notification on each change).
 
 Sync is state-based, not event-based: each run compares ``crm.policies.updated_at``
 with ``client.policies.crm_synced_at`` (and message ``external_ref`` ids), so a
@@ -25,13 +27,14 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.models.claims import Claim
 from app.db.models.engagement import Notification
 from app.db.models.files import StoredFile
 from app.db.models.policies import Policy
@@ -77,10 +80,11 @@ async def crm_schema_ready(session: AsyncSession) -> bool:
             "SELECT count(*) FROM information_schema.columns "
             "WHERE table_schema = 'crm' AND ("
             "(table_name = 'accounts' AND column_name = 'client_user_id') OR "
-            "(table_name = 'policies' AND column_name = 'client_policy_id'))"
+            "(table_name = 'policies' AND column_name = 'client_policy_id') OR "
+            "(table_name = 'claims' AND column_name = 'client_claim_id'))"
         )
     )
-    return found.scalar_one() == 2
+    return found.scalar_one() == 3
 
 
 @dataclass
@@ -88,10 +92,11 @@ class SyncResult:
     policies: int = 0
     messages: int = 0
     tickets: int = 0
+    claims: int = 0
 
     @property
     def changed(self) -> bool:
-        return bool(self.policies or self.messages or self.tickets)
+        return bool(self.policies or self.messages or self.tickets or self.claims)
 
 
 async def sync_once(session: AsyncSession) -> SyncResult:
@@ -102,6 +107,7 @@ async def sync_once(session: AsyncSession) -> SyncResult:
     result.policies = await _pull_policies(session)
     result.messages = await _pull_replies(session)
     result.tickets = await _pull_ticket_status(session)
+    result.claims = await _pull_claims(session)
     return result
 
 
@@ -373,6 +379,73 @@ async def _pull_ticket_status(session: AsyncSession) -> int:
             )
     await session.flush()
     return changed
+
+
+# --- Claims ------------------------------------------------------------------
+
+# CRM ClaimStatus -> (portal status, words for the client).
+_CLAIM_STATUS = {
+    "INTIMATED": ("submitted", "Claim received by your advisor"),
+    "DOCUMENTS_PENDING": ("documents_pending", "More documents needed"),
+    "SURVEYOR_ASSIGNED": ("in_review", "Surveyor assigned"),
+    "SUBMITTED_TO_INSURER": ("in_review", "Submitted to the insurer"),
+    "UNDER_REVIEW": ("in_review", "Under review by the insurer"),
+    "APPROVED": ("approved", "Claim approved"),
+    "REJECTED": ("rejected", "Claim rejected"),
+    "SETTLED": ("settled", "Claim settled"),
+}
+
+_CLAIM_SQL = text(
+    """
+    SELECT c.id AS crm_id, c.client_claim_id, c.status::text AS status,
+           c.approved_amount, c.remarks, c.surveyor_name,
+           c.updated_at AT TIME ZONE 'UTC' AS updated_at
+    FROM crm.claims c
+    JOIN client.claims cc ON cc.id = c.client_claim_id
+    WHERE cc.crm_synced_at IS NULL OR cc.crm_synced_at < c.updated_at AT TIME ZONE 'UTC'
+    ORDER BY c.updated_at
+    LIMIT :batch
+    """
+)
+
+
+async def _pull_claims(session: AsyncSession) -> int:
+    rows = (await session.execute(_CLAIM_SQL, {"batch": _BATCH})).mappings().all()
+    for row in rows:
+        claim = await session.get(Claim, row["client_claim_id"])
+        if claim is None:
+            continue
+        status, label = _CLAIM_STATUS.get(row["status"], ("in_review", "Claim updated"))
+        first_link = claim.crm_claim_id is None
+        claim.crm_claim_id = row["crm_id"]
+        claim.crm_synced_at = row["updated_at"]
+        if row["approved_amount"] is not None:
+            claim.approved_amount = _money(row["approved_amount"])
+        if status == claim.status and not first_link:
+            continue
+        if status != claim.status:
+            claim.status = status
+            if status == "settled":
+                claim.settled_date = datetime.now(UTC).date()
+            note = label
+            if row["remarks"] and status != "submitted":
+                note = f"{label}: {row['remarks']}"
+            elif row["surveyor_name"] and status == "in_review":
+                note = f"{label} ({row['surveyor_name']})"
+            claim.timeline = [
+                *(claim.timeline or []),
+                {"status": status, "date": datetime.now(UTC).date().isoformat(), "note": note},
+            ]
+            _notify(
+                session,
+                claim.user_id,
+                "Claim update",
+                f"{claim.claim_number}: {note}",
+                "claim",
+                claim.id,
+            )
+    await session.flush()
+    return len(rows)
 
 
 def _notify(

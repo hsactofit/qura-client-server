@@ -23,12 +23,13 @@ Deletion:
 from __future__ import annotations
 
 import uuid
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     Date,
+    DateTime,
     ForeignKey,
     Index,
     Numeric,
@@ -76,6 +77,14 @@ class Claim(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # Append-only event list: [{status, date, note}].
     timeline: Mapped[list] = mapped_column(
         JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    # The CRM claim this was imported as, and the CRM ``updated_at`` last
+    # applied here (shared qura_main database; see app.modules.crm_sync).
+    crm_claim_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), nullable=True
+    )
+    crm_synced_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
 
     user: Mapped[User] = relationship(back_populates="claims")

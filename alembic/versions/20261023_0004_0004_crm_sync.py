@@ -17,6 +17,8 @@ schema. This revision adds what the portal needs to mirror CRM-side work:
   policy_query, claim_help), so a client can ask about a specific policy.
 - ``ticket_messages.sender_name`` / ``external_ref``: advisor replies synced from
   the CRM (no portal user behind them) without duplicates.
+- ``claims.crm_claim_id`` / ``crm_synced_at``: claims filed on the portal are
+  worked in the CRM; their status flows back here.
 
 Non-destructive: only adds columns and widens CHECK constraints.
 """
@@ -123,6 +125,11 @@ def upgrade() -> None:
     op.add_column(
         "ticket_messages", sa.Column("external_ref", sa.String(100), nullable=True)
     )
+    op.add_column("claims", sa.Column("crm_claim_id", UUID, nullable=True))
+    op.add_column(
+        "claims", sa.Column("crm_synced_at", sa.DateTime(timezone=True), nullable=True)
+    )
+
     op.create_index(
         "uq_ticket_messages_external_ref",
         "ticket_messages",
@@ -133,6 +140,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.drop_column("claims", "crm_synced_at")
+    op.drop_column("claims", "crm_claim_id")
     op.drop_index("uq_ticket_messages_external_ref", table_name="ticket_messages")
     op.drop_column("ticket_messages", "external_ref")
     op.drop_column("ticket_messages", "sender_name")
