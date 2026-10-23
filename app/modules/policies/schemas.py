@@ -17,7 +17,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 PolicyTypeLiteral = Literal[
-    "health", "motor", "life", "travel", "home", "business", "other"
+    "health", "motor", "life", "travel", "home", "accident", "business", "other"
 ]
 PremiumFrequencyLiteral = Literal[
     "annual", "semi-annual", "quarterly", "monthly", "one-time"

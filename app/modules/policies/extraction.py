@@ -49,18 +49,22 @@ EXTRACTION_FIELDS = (
 )
 
 _MAX_TEXT_CHARS = 40000
-_MAX_OUTPUT_TOKENS = 4000
+_MAX_OUTPUT_TOKENS = 6000
+_MAX_SCAN_PAGES = 8
+_SCAN_DPI = 170
 
 _SYSTEM_PROMPT = """
-You read Indian insurance policy documents (health, motor, life, travel, home,
-business) for a policyholder and their insurance advisor. Return ONLY a valid JSON
+You read Indian insurance policy documents (health, motor, life/term, travel,
+home, personal accident, business) for a policyholder and their insurance advisor.
+Return ONLY a valid JSON
 object, exactly as printed in the document. Use null (or an empty list) for
 anything not clearly stated. Never guess or invent.
 
 Return ONLY this JSON shape (no markdown, no commentary):
 {
   "policy_number": string | null,
-  "policy_type": "health" | "motor" | "life" | "travel" | "home" | "business" | "other" | null,
+  "policy_type": "health" | "motor" | "life" | "travel" | "home" | "accident" | "business"
+                 | "other" | null,
   "insurer_name": string | null,
   "coverage_amount": number | null,
   "premium_amount": number | null,
@@ -76,14 +80,31 @@ Return ONLY this JSON shape (no markdown, no commentary):
     "insured_name": string | null,
     "policyholder_mobile": string | null,
     "policyholder_email": string | null,
-    "members": [{"name": string, "relationship": string | null,
-                 "age": number | null, "sum_insured": number | null}],
+    "policyholder_address": string | null,
+    "members": [{"name": string, "relationship": string | null, "age": number | null,
+                 "date_of_birth": "YYYY-MM-DD" | null, "sum_insured": number | null,
+                 "pre_existing_diseases": string | null}],
     "vehicle": {"registration_number": string | null, "make": string | null, "model": string | null,
                 "variant": string | null, "manufacturing_year": string | null,
-                "fuel_type": string | null, "idv": number | null} | null,
+                "fuel_type": string | null, "idv": number | null,
+                "engine_number": string | null, "chassis_number": string | null,
+                "cubic_capacity": string | null, "seating_capacity": string | null,
+                "previous_policy": string | null} | null,
     "key_features": {"room_rent_limit": string | null, "co_payment": string | null,
                      "deductible": string | null, "no_claim_bonus": string | null,
-                     "add_ons": [string]},
+                     "pre_hospitalization": string | null, "post_hospitalization": string | null,
+                     "restore_benefit": string | null, "add_ons": [string]},
+    "life": {"policy_term": string | null, "premium_payment_term": string | null,
+             "maturity_date": "YYYY-MM-DD" | null, "death_benefit_payout": string | null,
+             "riders": [{"name": string, "sum_insured": number | null,
+                         "premium": number | null}]} | null,
+    "travel": {"destination": string | null, "trip_start": "YYYY-MM-DD" | null,
+               "trip_end": "YYYY-MM-DD" | null, "trip_type": string | null,
+               "sum_insured_currency": string | null, "sum_insured_foreign": number | null} | null,
+    "property": {"risk_address": string | null, "property_type": string | null,
+                 "building_sum_insured": number | null,
+                 "contents_sum_insured": number | null} | null,
+    "premium_breakdown": {"net_premium": number | null, "gst": number | null} | null,
     "waiting_periods": [string],
     "claim_support": {"helpline": string | null, "email": string | null, "steps": [string]},
     "summary": string | null
@@ -93,10 +114,21 @@ Return ONLY this JSON shape (no markdown, no commentary):
 Rules:
 - Monetary amounts as plain numbers: no currency symbols, commas, or spaces.
 - Dates in YYYY-MM-DD. Indian documents print dates day-first: "01/12/2025" -> "2025-12-01".
-- coverage_amount is the sum insured / sum assured; for motor it is the IDV.
+- coverage_amount is the sum insured / sum assured in rupees; for motor it is the IDV.
+  For a travel policy insured in a foreign currency, put that amount and its ISO
+  currency code in travel.sum_insured_foreign / sum_insured_currency and leave
+  coverage_amount null unless a rupee amount is printed.
+- policy_type: "accident" for personal accident policies; "life" for term, endowment,
+  ULIP and other life insurance; "business" for shop, office, fire, marine, liability
+  and other commercial policies.
+- Fill life / travel / property / vehicle only for policies of that kind (else null).
+  life.riders: every rider with its own sum assured and premium. For life policies
+  end_date is the maturity / expiry date and premium_frequency the premium mode.
+- premium_breakdown: the premium before tax and the GST amount, when printed.
+- members[].pre_existing_diseases: as declared in the schedule, if any.
 - premium_amount is the total premium inclusive of taxes when available.
 - insurer_name is the insurance company's name as commonly known (e.g. "ICICI Lombard").
-- benefits / exclusions: short plain-English bullet phrases (max 12 each), most important first.
+- benefits / exclusions: short plain-English bullet phrases (max 20 each), most important first.
 - members: every insured person listed (health/life/travel).
 - waiting_periods: e.g. "30 days initial waiting period", "2 years for named ailments".
 - claim_support.steps: the claim process in up to 5 short steps, only if the document describes it.
@@ -166,8 +198,8 @@ def _normalise(raw: dict[str, Any]) -> dict[str, Any]:
         if value in ("", [], {}):
             value = None
         result[field] = value
-    result["benefits"] = coverage._str_list(raw.get("benefits"), 12)
-    result["exclusions"] = coverage._str_list(raw.get("exclusions"), 12)
+    result["benefits"] = coverage._str_list(raw.get("benefits"), 20)
+    result["exclusions"] = coverage._str_list(raw.get("exclusions"), 20)
     result["details"] = coverage.normalize_details(raw.get("details"))
     return result
 
@@ -185,6 +217,26 @@ def _extract_pdf_text(data: bytes) -> str:
         logger.warning("Local PDF text extraction failed: %s", type(exc).__name__)
         return ""
     return "\n\n".join(p for p in pages if p.strip())[:_MAX_TEXT_CHARS]
+
+
+def _render_pdf_pages(data: bytes) -> list[str]:
+    """Render the first pages of a PDF to JPEG data URLs (for scanned documents)."""
+    import io
+
+    import pypdfium2 as pdfium
+
+    urls: list[str] = []
+    try:
+        pdf = pdfium.PdfDocument(data)
+        for index in range(min(len(pdf), _MAX_SCAN_PAGES)):
+            image = pdf[index].render(scale=_SCAN_DPI / 72).to_pil().convert("RGB")
+            buf = io.BytesIO()
+            image.save(buf, "JPEG", quality=85)
+            urls.append("data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode())
+    except Exception as exc:  # noqa: BLE001 - malformed PDF
+        logger.warning("Scanned PDF rendering failed: %s", type(exc).__name__)
+        return []
+    return urls
 
 
 async def _chat_completion(
@@ -242,22 +294,25 @@ async def extract_policy(
                 {"role": "user", "content": f"Policy document text:\n\n{text}"},
             ]
         else:
-            # Scanned/textless PDF: send the file itself; the model reads the
-            # page images. Chat Completions accepts PDFs as a ``file`` part.
-            b64 = base64.b64encode(data).decode()
+            # Scanned/textless PDF: send the rendered pages as images. Sending the
+            # PDF file itself misread digits on scans in testing; page images at
+            # "high" detail read them reliably.
+            pages = _render_pdf_pages(data)
+            if not pages:
+                raise ExtractionError("Could not read the scanned document")
             messages = [
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {
                     "role": "user",
                     "content": [
                         {
-                            "type": "file",
-                            "file": {
-                                "filename": "policy.pdf",
-                                "file_data": f"data:application/pdf;base64,{b64}",
-                            },
+                            "type": "text",
+                            "text": "Extract the policy details from these scanned pages.",
                         },
-                        {"type": "text", "text": "Extract the policy details."},
+                        *(
+                            {"type": "image_url", "image_url": {"url": url, "detail": "high"}}
+                            for url in pages
+                        ),
                     ],
                 },
             ]
