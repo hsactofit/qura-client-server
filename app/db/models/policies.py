@@ -19,13 +19,14 @@ Document uploads are referenced via ``document_file_id`` into ``stored_files``.
 from __future__ import annotations
 
 import uuid
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     CheckConstraint,
     Date,
+    DateTime,
     ForeignKey,
     Index,
     Numeric,
@@ -91,6 +92,7 @@ class Policy(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # and confirmed (``user_confirmed``), and data an authoritative insurer
     # integration verified (``insurer_verified``). A manual upload is NEVER
     # insurer_verified — that transition requires an authoritative source.
+    # ``advisor_verified`` means a Qura advisor checked the document in the CRM.
     verification_status: Mapped[str] = mapped_column(
         String(20), nullable=False, server_default=text("'self_reported'")
     )
@@ -102,6 +104,19 @@ class Policy(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         PgUUID(as_uuid=True),
         ForeignKey("stored_files.id", ondelete="SET NULL"),
         nullable=True,
+    )
+    # Full AI-read policy (plan, members, vehicle, waiting periods, key features,
+    # claim support, summary). Shape: app.modules.policies.coverage.
+    details: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    # The matching CRM policy (shared qura_main database, ``crm`` schema) and the
+    # CRM ``updated_at`` last applied here. See app.modules.crm_sync.
+    crm_policy_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), nullable=True
+    )
+    crm_synced_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
 
     user: Mapped[User] = relationship(back_populates="policies")
@@ -120,7 +135,8 @@ class Policy(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __table_args__ = (
         CheckConstraint(
             "verification_status IN "
-            "('self_reported', 'user_confirmed', 'insurer_verified')",
+            "('self_reported', 'user_confirmed', 'advisor_verified', "
+            "'insurer_verified')",
             name="policies_verification_status_valid",
         ),
         # policy_number unique only when present (platform policies start null).
@@ -136,4 +152,10 @@ class Policy(UUIDPrimaryKeyMixin, TimestampMixin, Base):
             postgresql_where=text("proposal_id IS NOT NULL"),
         ),
         Index("ix_policies_user_id", "user_id"),
+        Index(
+            "uq_policies_crm_policy_id",
+            "crm_policy_id",
+            unique=True,
+            postgresql_where=text("crm_policy_id IS NOT NULL"),
+        ),
     )

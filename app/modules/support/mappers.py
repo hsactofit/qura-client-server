@@ -14,6 +14,7 @@ def ticket_to_dict(ticket: SupportTicket) -> dict[str, Any]:
         "category": ticket.category,
         "priority": ticket.priority,
         "status": ticket.status,
+        "policy_id": str(ticket.policy_id) if ticket.policy_id else None,
         "created_at": ticket.created_at.isoformat() if ticket.created_at else None,
         "updated_at": ticket.updated_at.isoformat() if ticket.updated_at else None,
     }
@@ -30,4 +31,7 @@ def message_to_dict(msg: TicketMessage) -> dict[str, Any]:
         # sender_profile is resolved at a later phase (needs a user join);
         # null keeps the frontend's optional-chaining happy.
         "sender_profile": None,
+        # Advisor replies synced from the CRM carry a display name instead.
+        "sender_name": msg.sender_name,
+        "from_advisor": msg.sender_id is None and msg.external_ref is not None,
     }

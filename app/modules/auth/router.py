@@ -65,6 +65,7 @@ async def signup(
         password=body.password,
         full_name=body.full_name,
         invite_token=body.invite_token,
+        phone=body.phone,
     )
     profile = await _load_profile(session, user.id)
     payload = await _issue_auth(response, settings, user)

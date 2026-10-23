@@ -96,10 +96,38 @@ def test_signin_rejects_invalid_email_format(db_client, store) -> None:
 # --- signup ---------------------------------------------------------------
 
 
-def test_signup_requires_invite(db_client, store) -> None:
+def test_signup_without_invite_creates_client(db_client, store) -> None:
     resp = db_client.post(
         "/api/client/auth/signup",
-        json={"email": "new@quramail.io", "password": "Password123", "fullName": "New"},
+        json={
+            "email": "new@quramail.io",
+            "password": "Password123",
+            "fullName": "New",
+            "phone": "098765 43210",
+        },
+    )
+    assert resp.status_code == 200
+    user = resp.json()["data"]["user"]
+    assert user["role"] == "USER"
+    assert user["phone"] == "+919876543210"
+
+
+def test_signup_rejects_bad_mobile(db_client, store) -> None:
+    resp = db_client.post(
+        "/api/client/auth/signup",
+        json={"email": "new@quramail.io", "password": "Password123", "phone": "12345"},
+    )
+    assert resp.status_code == 422
+
+
+def test_signup_with_bad_invite_rejected(db_client, store) -> None:
+    resp = db_client.post(
+        "/api/client/auth/signup",
+        json={
+            "email": "new@quramail.io",
+            "password": "Password123",
+            "inviteToken": "not-a-real-token",
+        },
     )
     assert resp.status_code == 400
 

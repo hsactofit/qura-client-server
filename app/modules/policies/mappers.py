@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.db.models.policies import Policy
+from app.modules.policies.coverage import normalize_details
 
 
 def _num(value: Any) -> Any:
@@ -48,6 +49,9 @@ def policy_to_dict(policy: Policy) -> dict[str, Any]:
         # Whether a private document is attached. There is NO public URL; the
         # file is only reachable via the authenticated download endpoint.
         "has_document": policy.document_file_id is not None,
+        # Full AI-read policy picture (see app.modules.policies.coverage).
+        "details": normalize_details(policy.details),
+        "advisor_managed": policy.crm_policy_id is not None,
         # Read by the UI but unbacked by the schema; safe empty defaults.
         "covered_members": [],
         "created_at": policy.created_at.isoformat() if policy.created_at else None,

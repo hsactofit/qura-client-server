@@ -21,11 +21,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.identity import User
 from app.db.models.support import SupportTicket
+from app.modules.crm_sync.service import crm_schema_ready
 
 _RM_ROLES = ("MANAGER", "ADMIN")
 
@@ -39,10 +40,43 @@ class RmContact:
     designation: str | None
 
 
+async def _crm_advisor(session: AsyncSession, user_id: str) -> RmContact | None:
+    """The CRM owner of the client's linked account (shared qura_main database)."""
+    if not await crm_schema_ready(session):
+        return None
+    row = (
+        await session.execute(
+            text(
+                "SELECT u.id, u.name, u.email FROM crm.accounts a "
+                "JOIN crm.users u ON u.id = a.owner_user_id "
+                "WHERE a.client_user_id = :uid AND u.is_active "
+                "ORDER BY a.updated_at DESC LIMIT 1"
+            ),
+            {"uid": user_id},
+        )
+    ).mappings().first()
+    if row is None:
+        return None
+    return RmContact(
+        id=str(row["id"]),
+        full_name=row["name"],
+        email=row["email"],
+        phone=None,
+        designation="Your Qura advisor",
+    )
+
+
 async def get_assigned_rm(
     session: AsyncSession, user_id: str
 ) -> RmContact | None:
-    """Return the client's assigned RM contact, or ``None`` if unassigned."""
+    """Return the client's assigned RM contact, or ``None`` if unassigned.
+
+    The CRM is authoritative: the owner of the client's CRM account is their
+    advisor. Without a CRM link, fall back to the assignee of their tickets.
+    """
+    advisor = await _crm_advisor(session, user_id)
+    if advisor is not None:
+        return advisor
     # Most recent ticket (owned by the client) that carries an assigned RM.
     result = await session.execute(
         select(SupportTicket)

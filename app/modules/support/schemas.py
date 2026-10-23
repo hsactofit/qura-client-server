@@ -6,7 +6,17 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-TicketCategory = Literal["claim", "payment", "policy_change", "login", "general"]
+TicketCategory = Literal[
+    "claim",
+    "payment",
+    "policy_change",
+    "login",
+    "general",
+    "renewal",
+    "callback",
+    "policy_query",
+    "claim_help",
+]
 TicketPriority = Literal["low", "medium", "high", "urgent"]
 
 

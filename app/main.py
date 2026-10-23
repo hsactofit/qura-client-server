@@ -19,6 +19,7 @@ from app.core.errors import register_error_handlers
 from app.core.logging import configure_logging
 from app.core.middleware import RequestIdMiddleware, SecurityHeadersMiddleware
 from app.db.session import dispose_engine
+from app.modules.crm_sync import runner as crm_sync_runner
 
 logger = logging.getLogger("qura.app")
 
@@ -27,9 +28,11 @@ logger = logging.getLogger("qura.app")
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings: Settings = app.state.settings
     logger.info("Starting %s", settings.app_name, extra={"config": settings.safe_summary()})
+    sync_task = crm_sync_runner.start(settings)
     try:
         yield
     finally:
+        await crm_sync_runner.stop(sync_task)
         # Dispose the engine if any phase created it. Safe when never used.
         await dispose_engine()
         logger.info("Shutdown complete")

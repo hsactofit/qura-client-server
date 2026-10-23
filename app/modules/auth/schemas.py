@@ -31,6 +31,7 @@ class SignUpRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=_MIN_PASSWORD_LENGTH, max_length=_MAX_PASSWORD_LENGTH)
     full_name: str | None = Field(default=None, alias="fullName", max_length=200)
+    phone: str | None = Field(default=None, max_length=20)
     invite_token: str | None = Field(default=None, alias="inviteToken")
 
     _v_name = field_validator("full_name")(_reject_markup)

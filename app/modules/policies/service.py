@@ -28,9 +28,13 @@ from app.core.errors import ApiError
 from app.core.uploads import DetectedFile
 from app.db.models.files import StoredFile
 from app.db.models.policies import Policy
-from app.modules.policies import extraction
+from app.db.models.support import SupportTicket, TicketMessage
+from app.modules.crm_sync import client as crm_client
+from app.modules.crm_sync.service import CRM_STORAGE_PREFIX
+from app.modules.policies import coverage, extraction
 from app.modules.policies.schemas import (
     ConfirmPolicyRequest,
+    PolicyRequest,
     PolicyStatusRequest,
     TrackPolicyRequest,
 )
@@ -141,6 +145,17 @@ async def extract_only(
 # --- Upload (extract + merge + persist) ------------------------------------
 
 
+def _reviewed_extraction(reviewed: dict[str, Any]) -> dict[str, Any]:
+    """Sanitise the extraction the client sends back after reviewing it."""
+    out: dict[str, Any] = {
+        field: reviewed.get(field) for field in extraction.EXTRACTION_FIELDS
+    }
+    out["benefits"] = coverage._str_list(reviewed.get("benefits"), 12)
+    out["exclusions"] = coverage._str_list(reviewed.get("exclusions"), 12)
+    out["details"] = coverage.normalize_details(reviewed.get("details"))
+    return out
+
+
 # Documented precedence: user form value first, then extracted value.
 def _merge_field(manual: Any, extracted: Any) -> Any:
     manual_clean = manual if manual not in (None, "") else None
@@ -204,6 +219,7 @@ async def upload_policy(
     document: bytes | None,
     detected: DetectedFile | None,
     original_name: str | None,
+    reviewed: dict[str, Any] | None = None,
 ) -> UploadOutcome:
     """Extract (if a document is present), merge, validate and persist.
 
@@ -217,7 +233,12 @@ async def upload_policy(
     extracted: dict[str, Any] = extraction.empty_result()
     extraction_used = False
 
-    if (
+    if reviewed:
+        # The client already ran /extract and reviewed the result in the UI;
+        # reuse it instead of paying for a second AI read of the same file.
+        extracted = {**extracted, **_reviewed_extraction(reviewed)}
+        extraction_used = extraction.has_values(extracted)
+    elif (
         document is not None
         and detected is not None
         and extraction.is_configured(settings)
@@ -226,7 +247,7 @@ async def upload_policy(
             extracted = await extraction.extract_policy(
                 settings, data=document, detected=detected
             )
-            extraction_used = any(v is not None for v in extracted.values())
+            extraction_used = extraction.has_values(extracted)
         except extraction.ExtractionError as exc:
             # Honest degradation: proceed with the user's fields only.
             logger.info("Upload extraction skipped: %s", type(exc).__name__)
@@ -305,6 +326,9 @@ async def upload_policy(
             nominee_relationship=_clean_str(merged.get("nominee_relationship")),
             policy_source="uploaded",
             verification_status="self_reported",
+            benefits=extracted.get("benefits") or [],
+            exclusions=extracted.get("exclusions") or [],
+            details=coverage.normalize_details(extracted.get("details")),
             document_original_name=original_name,
             document_file_id=stored_file.id if stored_file is not None else None,
         )
@@ -419,10 +443,12 @@ async def sync_policy_status(
 class PolicyDocument:
     """A policy's stored document, resolved and ownership-verified."""
 
-    path: Any  # pathlib.Path
+    path: Any  # pathlib.Path, or None when ``data`` holds the bytes
     filename: str
     content_type: str
     size_bytes: int
+    # Set instead of ``path`` for documents an advisor uploaded in the CRM.
+    data: bytes | None = None
 
 
 async def get_policy_document(
@@ -448,6 +474,18 @@ async def get_policy_document(
     if stored is None:
         raise ApiError("No document is available for this policy", status_code=404)
 
+    if stored.storage_key.startswith(CRM_STORAGE_PREFIX):
+        data, content_type = await crm_client.fetch_document(
+            settings, stored.storage_key[len(CRM_STORAGE_PREFIX) :]
+        )
+        return PolicyDocument(
+            path=None,
+            filename=stored.original_name or f"policy-{policy_id}.pdf",
+            content_type=stored.content_type or content_type or "application/pdf",
+            size_bytes=len(data),
+            data=data,
+        )
+
     try:
         path = storage.resolve_path(settings, stored.storage_key)
     except storage.StorageError as exc:
@@ -466,3 +504,54 @@ async def get_policy_document(
         content_type=stored.content_type or "application/octet-stream",
         size_bytes=stored.size_bytes or path.stat().st_size,
     )
+
+
+# --- Requests to the advisor -------------------------------------------------
+
+_REQUEST_SUBJECTS = {
+    "renewal": "Renewal quote",
+    "callback": "Call me back",
+    "policy_query": "Question about my policy",
+    "claim_help": "Help with a claim",
+}
+
+
+async def create_policy_request(
+    session: AsyncSession, user_id: str, policy_id: str, body: PolicyRequest
+) -> SupportTicket:
+    """Open a request about one owned policy; the CRM turns it into an advisor task."""
+    policy = await get_policy(session, user_id, policy_id)
+    open_same = await session.execute(
+        select(SupportTicket).where(
+            SupportTicket.user_id == user_id,
+            SupportTicket.policy_id == policy.id,
+            SupportTicket.category == body.type,
+            SupportTicket.status.in_(("open", "in_progress")),
+        )
+    )
+    existing = open_same.scalars().first()
+    if existing is not None:
+        if body.message:
+            session.add(
+                TicketMessage(ticket_id=existing.id, sender_id=user_id, message=body.message)
+            )
+            await session.flush()
+        return existing  # one open request per policy and type
+
+    label = " ".join(
+        part for part in (policy.insurer_name, policy.policy_number) if part
+    )
+    ticket = SupportTicket(
+        user_id=user_id,
+        policy_id=policy.id,
+        subject=f"{_REQUEST_SUBJECTS[body.type]}: {label or 'my policy'}"[:200],
+        category=body.type,
+        priority="high" if body.type in ("renewal", "claim_help") else "medium",
+        status="open",
+    )
+    session.add(ticket)
+    await session.flush()
+    if body.message:
+        session.add(TicketMessage(ticket_id=ticket.id, sender_id=user_id, message=body.message))
+        await session.flush()
+    return ticket

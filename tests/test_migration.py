@@ -75,6 +75,9 @@ class _RecordingOp:
     def drop_table(self, name, *args, **kwargs):  # type: ignore[no-untyped-def]
         self.dropped.append(name)
 
+    def add_column(self, table, column, *args, **kwargs):  # type: ignore[no-untyped-def]
+        self.columns.setdefault(table, set()).add(column.name)
+
     def create_index(self, *args, **kwargs):  # type: ignore[no-untyped-def]
         pass
 
@@ -102,11 +105,13 @@ def _load_initial_module():  # type: ignore[no-untyped-def]
     )
 
 
-# (filename, module name) for every create_table migration, in apply order.
-# Backfill-only migrations (e.g. 0002) create no tables and are omitted here.
+# (filename, module name) for every create_table / add_column migration, in
+# apply order. Backfill-only migrations (e.g. 0002) change no columns and are
+# omitted here.
 _TABLE_MIGRATIONS = [
     ("20261020_0001_0001_initial_schema.py", "qura_migration_0001"),
     ("20261020_0003_0003_kyc_documents.py", "qura_migration_0003"),
+    ("20261023_0004_0004_crm_sync.py", "qura_migration_0004"),
 ]
 
 

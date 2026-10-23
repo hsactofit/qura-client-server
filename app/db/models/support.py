@@ -56,6 +56,12 @@ class SupportTicket(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         nullable=True,
     )
     subject: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    # The policy a request is about (renewal quote, callback, query), if any.
+    policy_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("policies.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     category: Mapped[str | None] = mapped_column(String(32), nullable=True)
     priority: Mapped[str | None] = mapped_column(String(16), nullable=True)
     status: Mapped[str] = mapped_column(
@@ -75,7 +81,8 @@ class SupportTicket(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __table_args__ = (
         CheckConstraint(
             "category IS NULL OR category IN "
-            "('claim', 'payment', 'policy_change', 'login', 'general')",
+            "('claim', 'payment', 'policy_change', 'login', 'general', "
+            "'renewal', 'callback', 'policy_query', 'claim_help')",
             name="support_tickets_category_valid",
         ),
         CheckConstraint(
@@ -107,6 +114,10 @@ class TicketMessage(UUIDPrimaryKeyMixin, Base):
         nullable=True,
     )
     message: Mapped[str] = mapped_column(Text, nullable=False)
+    # Advisor replies synced from the CRM have no portal user: they carry the
+    # advisor's display name and the CRM activity id (dedupe key) instead.
+    sender_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    external_ref: Mapped[str | None] = mapped_column(String(100), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=text("now()")
     )
@@ -116,4 +127,10 @@ class TicketMessage(UUIDPrimaryKeyMixin, Base):
 
     __table_args__ = (
         Index("ix_ticket_messages_ticket_created", "ticket_id", "created_at"),
+        Index(
+            "uq_ticket_messages_external_ref",
+            "external_ref",
+            unique=True,
+            postgresql_where=text("external_ref IS NOT NULL"),
+        ),
     )

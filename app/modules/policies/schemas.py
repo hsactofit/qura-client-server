@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 PolicyTypeLiteral = Literal[
     "health", "motor", "life", "travel", "home", "business", "other"
@@ -62,3 +62,22 @@ class PolicyStatusRequest(BaseModel):
 
     proposal_id: str = Field(min_length=1, max_length=100)
     external_proposal_id: str | None = Field(default=None, max_length=100)
+
+
+PolicyRequestType = Literal["renewal", "callback", "policy_query", "claim_help"]
+
+
+class PolicyRequest(BaseModel):
+    """A client asking their advisor for help with one policy."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: PolicyRequestType
+    message: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("message")
+    @classmethod
+    def _no_markup(cls, value: str | None) -> str | None:
+        if value and ("<" in value or ">" in value):
+            raise ValueError("must not contain '<' or '>' characters")
+        return value.strip() if value else None

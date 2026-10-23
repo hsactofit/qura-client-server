@@ -55,6 +55,24 @@ async def verify_invite(session: AsyncSession, raw_token: str) -> Invite:
     return invite
 
 
+def normalize_mobile(raw: str | None) -> str | None:
+    """Indian mobile numbers to E.164 (+91XXXXXXXXXX), the CRM's contact format.
+
+    Returns ``None`` for an empty value; raises ApiError(422) for anything that
+    is not a valid 10-digit Indian mobile (optionally prefixed 0, 91 or +91).
+    """
+    if raw is None or not raw.strip():
+        return None
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    if len(digits) == 12 and digits.startswith("91"):
+        digits = digits[2:]
+    elif len(digits) == 11 and digits.startswith("0"):
+        digits = digits[1:]
+    if len(digits) != 10 or digits[0] not in "6789":
+        raise ApiError("Enter a valid 10-digit Indian mobile number", status_code=422)
+    return f"+91{digits}"
+
+
 async def register_user(
     session: AsyncSession,
     *,
@@ -62,35 +80,46 @@ async def register_user(
     password: str,
     full_name: str | None,
     invite_token: str | None,
+    phone: str | None = None,
 ) -> User:
-    """Register a user via a valid invite. Role comes from the invite only.
+    """Register a portal user.
 
-    A client-supplied role is impossible here: the role is read from the invite
-    record, never from the request body.
+    Anyone may sign up as a client (role ``USER``); that is how policyholders
+    join and upload their policies. Staff roles still need an invite, and the
+    role is then read from the invite record — never from the request body.
     """
     norm_email = normalize_email(email)
+    norm_phone = normalize_mobile(phone)
 
-    if not invite_token:
-        raise ApiError("A valid invite is required to register", status_code=400)
-    invite = await verify_invite(session, invite_token)
-    if normalize_email(invite.email) != norm_email:
-        raise ApiError("Invite email does not match", status_code=400)
+    invite: Invite | None = None
+    if invite_token:
+        invite = await verify_invite(session, invite_token)
+        if normalize_email(invite.email) != norm_email:
+            raise ApiError("Invite email does not match", status_code=400)
+
+    if await get_user_by_email(session, norm_email) is not None:
+        raise ApiError("An account with this email already exists", status_code=409)
 
     user = User(
         email=norm_email,
         password_hash=hash_password(password),
         full_name=full_name,
-        role=invite.role,  # authoritative: never from the client body
+        phone=norm_phone,
+        role=invite.role if invite is not None else "USER",
         status="ACTIVE",
     )
     session.add(user)
-    invite.is_used = True
+    if invite is not None:
+        invite.is_used = True
     try:
         await session.flush()
     except IntegrityError as exc:
-        # Concurrent duplicate registration: the unique email constraint fires.
+        # Concurrent duplicate registration, or a mobile already in use.
         await session.rollback()
-        raise ApiError("An account with this email already exists", status_code=409) from exc
+        raise ApiError(
+            "An account with this email or mobile number already exists",
+            status_code=409,
+        ) from exc
 
     # Create the empty 1:1 profile row so later profile updates have a target.
     session.add(UserProfile(user_id=user.id))

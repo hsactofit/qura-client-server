@@ -7,6 +7,7 @@
   POST  /policies/track           create a local tracking record for a proposal
   PATCH /policies/confirm         confirm user-reviewed details for a proposal
   POST  /policies/status          live insurer status sync (unavailable here)
+  POST  /policies/{id}/request    ask the advisor (renewal, callback, query, claim)
   GET   /policies/{id}/download   stream the owned policy's private document
 
 Reads and writes are scoped to the authenticated user (user_id-filtered, 404 on
@@ -21,10 +22,12 @@ deletable through this client API.
 
 from __future__ import annotations
 
+import json
 from typing import Annotated
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
@@ -36,9 +39,11 @@ from app.modules.policies import service
 from app.modules.policies.mappers import policy_to_dict
 from app.modules.policies.schemas import (
     ConfirmPolicyRequest,
+    PolicyRequest,
     PolicyStatusRequest,
     TrackPolicyRequest,
 )
+from app.modules.support.mappers import ticket_to_dict
 
 router = APIRouter(prefix="/policies", tags=["policies"])
 
@@ -88,6 +93,7 @@ async def upload_policy(
     end_date: Annotated[str | None, Form()] = None,
     nominee_name: Annotated[str | None, Form()] = None,
     nominee_relationship: Annotated[str | None, Form()] = None,
+    extracted: Annotated[str | None, Form()] = None,
     _csrf: None = Depends(enforce_csrf),
     user: CurrentUser = Depends(require_authenticated),
     session: AsyncSession = Depends(get_session),
@@ -123,6 +129,15 @@ async def upload_policy(
         "nominee_name": nominee_name,
         "nominee_relationship": nominee_relationship,
     }
+    reviewed: dict | None = None
+    if extracted:
+        # JSON from a prior /extract call (reviewed in the UI). Bad JSON is
+        # ignored: the server then extracts again rather than failing.
+        try:
+            parsed = json.loads(extracted)
+        except ValueError:
+            parsed = None
+        reviewed = parsed if isinstance(parsed, dict) else None
     outcome = await service.upload_policy(
         session,
         settings,
@@ -131,6 +146,7 @@ async def upload_policy(
         document=data,
         detected=detected,
         original_name=original_name,
+        reviewed=reviewed,
     )
     return success(
         {
@@ -176,6 +192,19 @@ async def policy_status(
     return success(None)  # unreachable today; kept for when sync is supported
 
 
+@router.post("/{policy_id}/request")
+async def request_help(
+    policy_id: str,
+    body: PolicyRequest,
+    _csrf: None = Depends(enforce_csrf),
+    user: CurrentUser = Depends(require_authenticated),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Ask the advisor for a renewal quote, a callback, or help with this policy."""
+    ticket = await service.create_policy_request(session, user.id, policy_id, body)
+    return success(ticket_to_dict(ticket), "Request sent to your Qura advisor")
+
+
 @router.get("/{policy_id}")
 async def get_policy(
     policy_id: str,
@@ -192,13 +221,22 @@ async def download_policy(
     user: CurrentUser = Depends(require_authenticated),
     session: AsyncSession = Depends(get_session),
     settings: Settings = Depends(get_settings),
-) -> FileResponse:
+) -> Response:
     """Stream the owned policy's document from private storage.
 
     Returns the file as an attachment. Ownership is enforced and the path is
     resolved inside the private storage root (no public exposure, no traversal).
     """
     doc = await service.get_policy_document(session, settings, user.id, policy_id)
+    if doc.data is not None:
+        safe_name = quote(doc.filename)
+        return Response(
+            content=doc.data,
+            media_type=doc.content_type,
+            headers={
+                "Content-Disposition": f"attachment; filename*=utf-8''{safe_name}"
+            },
+        )
     return FileResponse(
         path=doc.path,
         media_type=doc.content_type,

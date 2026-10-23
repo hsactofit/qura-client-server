@@ -36,6 +36,7 @@ _SENSITIVE_FIELDS: frozenset[str] = frozenset(
         "database_url",
         "database_password",
         "openai_api_key",
+        "internal_token",
     }
 )
 
@@ -116,6 +117,16 @@ class Settings(BaseSettings):
     openai_model_name: str = "gpt-4.1"
     # Upper bound on how long an extraction HTTP call may take (seconds).
     openai_timeout_seconds: int = 60
+
+    # --- CRM link (shared qura_main database) -------------------------------
+    # The CRM owns the ``crm`` schema next to this service's ``client`` schema.
+    # A background loop pulls advisor work (policies, replies, request status)
+    # into the portal every N seconds; 0 disables it (tests, local runs without
+    # a CRM). Advisor-uploaded files are fetched from the CRM's internal
+    # endpoint with a shared token over the private Docker network.
+    crm_sync_interval_seconds: int = 0
+    crm_internal_url: str = ""
+    internal_token: str = ""
 
     # --- Logging -----------------------------------------------------------
     log_level: str = "INFO"

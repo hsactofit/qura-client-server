@@ -29,6 +29,7 @@ import httpx
 
 from app.core.config import Settings
 from app.core.uploads import DetectedFile
+from app.modules.policies import coverage
 
 logger = logging.getLogger("qura.policies.extraction")
 
@@ -47,13 +48,14 @@ EXTRACTION_FIELDS = (
     "nominee_relationship",
 )
 
-_MAX_TEXT_CHARS = 8000
+_MAX_TEXT_CHARS = 40000
 _MAX_OUTPUT_TOKENS = 4000
 
 _SYSTEM_PROMPT = """
-You are an insurance policy data extractor for Indian insurance documents.
-Extract structured data from the provided policy document and return ONLY a valid
-JSON object. Use null for any field you cannot find with confidence. Never guess.
+You read Indian insurance policy documents (health, motor, life, travel, home,
+business) for a policyholder and their insurance advisor. Return ONLY a valid JSON
+object, exactly as printed in the document. Use null (or an empty list) for
+anything not clearly stated. Never guess or invent.
 
 Return ONLY this JSON shape (no markdown, no commentary):
 {
@@ -66,14 +68,40 @@ Return ONLY this JSON shape (no markdown, no commentary):
   "start_date": "YYYY-MM-DD" | null,
   "end_date": "YYYY-MM-DD" | null,
   "nominee_name": string | null,
-  "nominee_relationship": string | null
+  "nominee_relationship": string | null,
+  "benefits": [string],
+  "exclusions": [string],
+  "details": {
+    "plan_name": string | null,
+    "insured_name": string | null,
+    "policyholder_mobile": string | null,
+    "policyholder_email": string | null,
+    "members": [{"name": string, "relationship": string | null,
+                 "age": number | null, "sum_insured": number | null}],
+    "vehicle": {"registration_number": string | null, "make": string | null, "model": string | null,
+                "variant": string | null, "manufacturing_year": string | null,
+                "fuel_type": string | null, "idv": number | null} | null,
+    "key_features": {"room_rent_limit": string | null, "co_payment": string | null,
+                     "deductible": string | null, "no_claim_bonus": string | null,
+                     "add_ons": [string]},
+    "waiting_periods": [string],
+    "claim_support": {"helpline": string | null, "email": string | null, "steps": [string]},
+    "summary": string | null
+  }
 }
 
 Rules:
 - Monetary amounts as plain numbers: no currency symbols, commas, or spaces.
-- Dates in YYYY-MM-DD. "Dec 01, 2025" -> "2025-12-01".
-- coverage_amount is the sum insured / sum assured.
+- Dates in YYYY-MM-DD. Indian documents print dates day-first: "01/12/2025" -> "2025-12-01".
+- coverage_amount is the sum insured / sum assured; for motor it is the IDV.
 - premium_amount is the total premium inclusive of taxes when available.
+- insurer_name is the insurance company's name as commonly known (e.g. "ICICI Lombard").
+- benefits / exclusions: short plain-English bullet phrases (max 12 each), most important first.
+- members: every insured person listed (health/life/travel).
+- waiting_periods: e.g. "30 days initial waiting period", "2 years for named ailments".
+- claim_support.steps: the claim process in up to 5 short steps, only if the document describes it.
+- summary: 2-3 plain-language sentences a policyholder understands: what is covered,
+  for how much, until when, and the one or two most important limits.
 - Output must be a single JSON object and nothing else.
 """.strip()
 
@@ -103,6 +131,16 @@ def empty_result() -> dict[str, Any]:
     return dict.fromkeys(EXTRACTION_FIELDS)
 
 
+def has_values(result: dict[str, Any]) -> bool:
+    """True when an extraction found anything at all."""
+    if any(result.get(field) is not None for field in EXTRACTION_FIELDS):
+        return True
+    if result.get("benefits") or result.get("exclusions"):
+        return True
+    details = result.get("details") or {}
+    return bool(details.get("summary") or details.get("plan_name") or details.get("members"))
+
+
 def _parse_json_response(content: str) -> dict[str, Any]:
     content = content.strip()
     if content.startswith("```"):
@@ -117,13 +155,20 @@ def _parse_json_response(content: str) -> dict[str, Any]:
 
 
 def _normalise(raw: dict[str, Any]) -> dict[str, Any]:
-    """Keep only known fields; coerce blanks to None. Never invents values."""
+    """Keep only known fields; coerce blanks to None. Never invents values.
+
+    Besides the flat EXTRACTION_FIELDS the result carries ``benefits``,
+    ``exclusions`` (string lists) and ``details`` (see coverage.py).
+    """
     result = empty_result()
     for field in EXTRACTION_FIELDS:
         value = raw.get(field)
         if value in ("", [], {}):
             value = None
         result[field] = value
+    result["benefits"] = coverage._str_list(raw.get("benefits"), 12)
+    result["exclusions"] = coverage._str_list(raw.get("exclusions"), 12)
+    result["details"] = coverage.normalize_details(raw.get("details"))
     return result
 
 
@@ -190,19 +235,32 @@ async def extract_policy(
     messages: list[dict[str, Any]]
     if detected.content_type == "application/pdf":
         text = _extract_pdf_text(data)
-        if text:
+        # A scan often still has a few printed words; treat thin text as a scan.
+        if len("".join(text.split())) >= 200:
             messages = [
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": f"Policy document text:\n\n{text}"},
             ]
         else:
-            # Scanned/textless PDF: fall back to sending it as an image part is
-            # not supported by chat PDFs here, so report a clear, honest error
-            # rather than returning empty data silently.
-            raise ExtractionError(
-                "This looks like a scanned PDF with no extractable text. "
-                "Enter the policy details manually."
-            )
+            # Scanned/textless PDF: send the file itself; the model reads the
+            # page images. Chat Completions accepts PDFs as a ``file`` part.
+            b64 = base64.b64encode(data).decode()
+            messages = [
+                {"role": "system", "content": _SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "file",
+                            "file": {
+                                "filename": "policy.pdf",
+                                "file_data": f"data:application/pdf;base64,{b64}",
+                            },
+                        },
+                        {"type": "text", "text": "Extract the policy details."},
+                    ],
+                },
+            ]
     else:
         b64 = base64.b64encode(data).decode()
         data_url = f"data:{detected.content_type};base64,{b64}"
