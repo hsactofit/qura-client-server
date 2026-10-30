@@ -13,6 +13,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import ApiError
 from app.db.models.support import SupportTicket, TicketMessage
+from app.modules.support.requests import (
+    OPEN_STATUSES,
+    duplicate_error,
+    lock_user_requests,
+)
 
 
 async def list_tickets(session: AsyncSession, user_id: str) -> list[SupportTicket]:
@@ -58,7 +63,22 @@ async def create_ticket(
     subject: str,
     category: str | None,
     priority: str | None,
+    message: str | None = None,
 ) -> SupportTicket:
+    # One open ticket per topic: the same subject in the same category while
+    # an earlier one is still open is a duplicate, not new work.
+    await lock_user_requests(session, user_id)
+    wanted = " ".join(subject.lower().split())
+    open_same = await session.execute(
+        select(SupportTicket).where(
+            SupportTicket.user_id == user_id,
+            SupportTicket.category == category,
+            SupportTicket.status.in_(OPEN_STATUSES),
+        )
+    )
+    for existing in open_same.scalars().all():
+        if " ".join((existing.subject or "").lower().split()) == wanted:
+            raise duplicate_error(existing, "support")
     ticket = SupportTicket(
         user_id=user_id,
         subject=subject,
@@ -68,13 +88,20 @@ async def create_ticket(
     )
     session.add(ticket)
     await session.flush()
+    if message:
+        session.add(TicketMessage(ticket_id=ticket.id, sender_id=user_id, message=message))
+        await session.flush()
     return ticket
 
 
 async def create_message(
     session: AsyncSession, user_id: str, ticket_id: str, *, message: str
 ) -> TicketMessage:
-    await get_ticket(session, user_id, ticket_id)  # ownership
+    ticket = await get_ticket(session, user_id, ticket_id)  # ownership
+    if ticket.status == "resolved":
+        # Writing back on a resolved request reopens it; the CRM gives the
+        # advisor a new task for it.
+        ticket.status = "open"
     msg = TicketMessage(ticket_id=ticket_id, sender_id=user_id, message=message)
     session.add(msg)
     await session.flush()

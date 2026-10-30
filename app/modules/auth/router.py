@@ -36,6 +36,7 @@ from app.modules.auth.schemas import (
     VerifyInviteRequest,
 )
 from app.modules.auth.service import _load_profile
+from app.modules.profile import uploads
 from app.modules.users_mapping import user_to_dict
 
 logger = logging.getLogger("qura.auth")
@@ -107,10 +108,16 @@ async def get_session_bootstrap(
     if db_user is None:  # session valid but user vanished; treat as expired
         raise ApiError("Invalid or expired token", status_code=401)
     profile = await _load_profile(session, db_user.id)
+    # Same KYC summary the profile endpoint returns, so the bootstrap user's
+    # preferences.kyc_documents reflects real uploads instead of {}.
+    kyc = await uploads.list_kyc_documents(session, str(db_user.id))
     csrf = generate_csrf_token()
     set_csrf_cookie(response, settings, csrf)
     return success(
-        {"user": user_to_dict(db_user, profile), "csrf_token": csrf},
+        {
+            "user": user_to_dict(db_user, profile, uploads.kyc_documents_summary(kyc)),
+            "csrf_token": csrf,
+        },
         "Session active",
     )
 

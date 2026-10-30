@@ -22,7 +22,7 @@ from app.db.mixins import TimestampMixin, UUIDPrimaryKeyMixin
 if TYPE_CHECKING:
     from app.db.models.identity import User
 
-FILE_PURPOSES = ("avatar", "kyc", "policy", "claim", "other")
+FILE_PURPOSES = ("avatar", "kyc", "policy", "claim", "endorsement", "other")
 
 
 class StoredFile(UUIDPrimaryKeyMixin, TimestampMixin, Base):
@@ -44,7 +44,7 @@ class StoredFile(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     __table_args__ = (
         CheckConstraint(
-            "purpose IN ('avatar', 'kyc', 'policy', 'claim', 'other')",
+            "purpose IN ('avatar', 'kyc', 'policy', 'claim', 'endorsement', 'other')",
             name="stored_files_purpose_valid",
         ),
         Index("ix_stored_files_owner_user_id", "owner_user_id"),

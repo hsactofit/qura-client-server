@@ -31,10 +31,31 @@ from app.db.models.files import StoredFile
 from app.db.models.identity import User
 from app.db.models.kyc import KYC_DOC_TYPES, KycDocument
 
-# The path (under the API prefix) at which the authenticated avatar is served.
-# Stored in ``users.photo_url`` so the existing frontend <AvatarImage src> loads
-# it with credentials; it is NOT a public file location.
-_AVATAR_URL = "/user/avatar"
+# The route (relative to the API prefix) at which the authenticated avatar is
+# served. It is NOT a public file location.
+_AVATAR_PATH = "/user/avatar"
+
+
+def avatar_url(api_prefix: str) -> str:
+    """Browser-loadable URL of the authenticated avatar endpoint.
+
+    ``users.photo_url`` is rendered directly as ``<AvatarImage src>``, which the
+    browser resolves against the frontend origin, so it must include the API
+    prefix (``/api/client/user/avatar``). The GET route authenticates by the
+    session cookie, which a same-origin ``<img>`` request sends automatically.
+    """
+    return f"{api_prefix.rstrip('/')}{_AVATAR_PATH}"
+
+
+def public_photo_url(value: str | None, api_prefix: str) -> str | None:
+    """Expose a stored ``photo_url`` as a URL the frontend can load.
+
+    Rows written before the prefix fix hold the API-relative ``/user/avatar``;
+    rewrite that to the prefixed URL. Any other value is returned unchanged.
+    """
+    if value == _AVATAR_PATH:
+        return avatar_url(api_prefix)
+    return value
 
 
 # --- Avatar ----------------------------------------------------------------
@@ -75,6 +96,7 @@ async def upload_avatar(
     enforce_size(data, max_bytes=settings.upload_max_bytes)
     detected = sniff_image(data)
 
+    url = avatar_url(settings.api_prefix)
     storage_key, sha256, size = storage.save_bytes(
         settings, purpose="avatar", original_name=original_name, data=data
     )
@@ -95,7 +117,7 @@ async def upload_avatar(
         )
         session.add(stored)
         user = await _load_user(session, user_id)
-        user.photo_url = _AVATAR_URL
+        user.photo_url = url
         await session.flush()
     except Exception:
         storage.delete_quietly(settings, storage_key)
@@ -103,7 +125,7 @@ async def upload_avatar(
     # Only after the row swap succeeds do we drop the previous bytes.
     if old_key is not None:
         storage.delete_quietly(settings, old_key)
-    return _AVATAR_URL
+    return url
 
 
 @dataclass

@@ -3,8 +3,8 @@
 Frontend ``Claim`` type: claim_number, claim_amount, approved_amount, status,
 description, submission_date, created_at, nested ``policy`` summary, and
 ``documents[{name, file_url}]`` (Downloads page). The policy summary and the
-documents are included only when already loaded on the instance (list view maps
-without them; detail view eager-loads documents).
+documents are included only when already loaded on the instance (the list view
+eager-loads ``policy``; the detail view eager-loads documents).
 """
 
 from __future__ import annotations

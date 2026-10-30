@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import secrets
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,11 +23,14 @@ from app.db.models.claims import Claim, ClaimDocument
 from app.db.models.files import StoredFile
 from app.modules.policies.service import get_policy
 
+_MAX_UTC_OFFSET = timedelta(hours=14)
+
 
 async def list_claims(session: AsyncSession, user_id: str) -> list[Claim]:
     result = await session.execute(
         select(Claim)
         .where(Claim.user_id == user_id)
+        .options(selectinload(Claim.policy))
         .order_by(Claim.created_at.desc())
     )
     return list(result.scalars().all())
@@ -37,7 +40,7 @@ async def get_claim(session: AsyncSession, user_id: str, claim_id: str) -> Claim
     result = await session.execute(
         select(Claim)
         .where(Claim.id == claim_id, Claim.user_id == user_id)
-        .options(selectinload(Claim.documents))
+        .options(selectinload(Claim.documents), selectinload(Claim.policy))
     )
     claim = result.scalar_one_or_none()
     if claim is None:
@@ -71,7 +74,10 @@ async def file_claim(
     policy = await get_policy(session, user_id, policy_id)  # 404 if not owned
     if policy.status not in ("active", "expired"):
         raise ApiError("Claims can only be filed on an active policy", status_code=422)
-    if incident_date and incident_date > datetime.now(UTC).date():
+    # The client picks the date in its local calendar (India is UTC+5:30), so
+    # "today" there can be "tomorrow" in UTC; allow the furthest-ahead timezone.
+    latest_local_today = (datetime.now(UTC) + _MAX_UTC_OFFSET).date()
+    if incident_date and incident_date > latest_local_today:
         raise ApiError("The incident date cannot be in the future", status_code=422)
 
     today = datetime.now(UTC).date().isoformat()

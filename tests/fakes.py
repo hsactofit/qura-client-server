@@ -111,6 +111,11 @@ def _match(row: Any, clause: Any) -> bool:
             if right_value is None:
                 return actual is not None
             return bool(actual) != bool(right_value)
+        # IN / NOT IN over a literal list
+        if op_name in ("in_op", "not_in_op"):
+            values = right_value if isinstance(right_value, (list, tuple)) else []
+            found = any(_coerce(actual, v)[0] == _coerce(actual, v)[1] for v in values)
+            return found if op_name == "in_op" else not found
         # ILIKE (case-insensitive contains, '%term%')
         if op_name == "ilike_op" or "ilike" in op_name:
             pattern = str(right_value).strip("%").lower()

@@ -87,6 +87,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from app.modules.profile.router import router as profile_router
     from app.modules.reference.router import router as reference_router
     from app.modules.rm.router import router as rm_router
+    from app.modules.support.router import requests_router as support_requests_router
     from app.modules.support.router import router as support_router
     from app.modules.transactions.router import router as transactions_router
 
@@ -102,6 +103,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(transactions_router, prefix=api)
     app.include_router(notifications_router, prefix=api)
     app.include_router(support_router, prefix=api)
+    app.include_router(support_requests_router, prefix=api)
     app.include_router(reference_router, prefix=api)
     app.include_router(rm_router, prefix=api)
 

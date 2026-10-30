@@ -112,6 +112,7 @@ _TABLE_MIGRATIONS = [
     ("20261020_0001_0001_initial_schema.py", "qura_migration_0001"),
     ("20261020_0003_0003_kyc_documents.py", "qura_migration_0003"),
     ("20261023_0004_0004_crm_sync.py", "qura_migration_0004"),
+    ("20261030_0005_0005_callback_requests.py", "qura_migration_0005"),
 ]
 
 

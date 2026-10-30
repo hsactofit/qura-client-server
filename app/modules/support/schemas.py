@@ -32,8 +32,18 @@ class CreateTicketRequest(BaseModel):
     subject: str = Field(min_length=1, max_length=200)
     category: TicketCategory = "general"
     priority: TicketPriority = "medium"
+    # The first message, saved with the ticket so the advisor never sees a
+    # request without its description.
+    message: str | None = Field(default=None, max_length=5000)
 
     _v_subject = field_validator("subject")(_reject_markup)
+
+    @field_validator("message")
+    @classmethod
+    def _v_message(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _reject_markup(value).strip() or None
 
 
 class CreateMessageRequest(BaseModel):

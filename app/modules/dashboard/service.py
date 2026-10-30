@@ -26,7 +26,10 @@ from app.db.models.support import SupportTicket
 from app.db.models.transactions import Transaction
 
 _RENEWAL_WINDOW_DAYS = 30
-_ACTIVE_CLAIM_STATES = ("submitted", "in_review")
+# Claims still being worked (see crm_sync._CLAIM_STATUS for the full set).
+_ACTIVE_CLAIM_STATES = ("submitted", "documents_pending", "in_review")
+# Matches the sidebar's open-ticket badge: resolved/closed are not open.
+_OPEN_TICKET_STATES = ("open", "in_progress")
 
 
 @dataclass(frozen=True)
@@ -84,7 +87,7 @@ async def build_dashboard(session: AsyncSession, user_id: str) -> DashboardData:
 
     upcoming = [p for p in active if _within_renewal(p)]
     pending_claims = [c for c in claims if c.status in _ACTIVE_CLAIM_STATES]
-    open_tickets = [t for t in tickets if t.status != "closed"]
+    open_tickets = [t for t in tickets if t.status in _OPEN_TICKET_STATES]
     unread = [n for n in notifications if not n.is_read]
 
     total_coverage = sum(

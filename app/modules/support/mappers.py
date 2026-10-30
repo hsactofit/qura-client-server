@@ -15,6 +15,13 @@ def ticket_to_dict(ticket: SupportTicket) -> dict[str, Any]:
         "priority": ticket.priority,
         "status": ticket.status,
         "policy_id": str(ticket.policy_id) if ticket.policy_id else None,
+        "preferred_callback_at": (
+            ticket.preferred_callback_at.isoformat()
+            if ticket.preferred_callback_at
+            else None
+        ),
+        "insurance_type": ticket.insurance_type,
+        "has_document": ticket.document_file_id is not None,
         "created_at": ticket.created_at.isoformat() if ticket.created_at else None,
         "updated_at": ticket.updated_at.isoformat() if ticket.updated_at else None,
     }

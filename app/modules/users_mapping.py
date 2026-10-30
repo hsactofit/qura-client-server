@@ -16,11 +16,19 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.core.config import get_settings
 from app.db.models.identity import User, UserProfile
 
 
 def _iso(value: Any) -> Any:
     return value.isoformat() if value is not None and hasattr(value, "isoformat") else value
+
+
+def _photo_url(value: str | None) -> str | None:
+    # Local import: profile.uploads imports models/storage, keep this module light.
+    from app.modules.profile.uploads import public_photo_url
+
+    return public_photo_url(value, get_settings().api_prefix)
 
 
 def build_preferences(
@@ -57,7 +65,7 @@ def user_to_dict(
         "email": user.email,
         "full_name": user.full_name,
         "phone": user.phone,
-        "photo_url": user.photo_url,
+        "photo_url": _photo_url(user.photo_url),
         "address": user.address,
         "role": user.role,
         "date_of_birth": _iso(profile.date_of_birth) if profile else None,

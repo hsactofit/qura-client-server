@@ -345,7 +345,14 @@ async def _pull_replies(session: AsyncSession) -> int:
 
 _TICKET_SQL = text(
     """
-    SELECT DISTINCT ON (t.id) t.id, t.status, tk.status::text AS task_status
+    SELECT DISTINCT ON (t.id) t.id, t.status, tk.status::text AS task_status,
+           -- The client acted after the advisor's last change (reopened the request, or wrote
+           -- again before this pull ran): leave it open for the CRM's follow-up task.
+           -- crm timestamps are naive UTC, so convert before comparing with timestamptz.
+           (t.updated_at > tk.updated_at AT TIME ZONE 'UTC'
+            OR EXISTS (SELECT 1 FROM client.ticket_messages m
+                       WHERE m.ticket_id = t.id AND m.sender_id IS NOT NULL
+                         AND m.created_at > tk.updated_at AT TIME ZONE 'UTC')) AS client_acted_since
     FROM crm.tasks tk
     JOIN client.support_tickets t ON t.id = tk.related_id
     WHERE tk.related_type = 'CLIENT_TICKET'
@@ -363,6 +370,8 @@ async def _pull_ticket_status(session: AsyncSession) -> int:
             continue
         if _TICKET_ORDER.index(wanted) <= _TICKET_ORDER.index(row["status"]):
             continue  # never move a request backwards
+        if row["client_acted_since"]:
+            continue  # the client came back after the advisor's last action
         ticket = await session.get(SupportTicket, row["id"])
         if ticket is None:
             continue

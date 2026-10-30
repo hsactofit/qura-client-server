@@ -37,7 +37,11 @@ from app.db.mixins import TimestampMixin, UUIDPrimaryKeyMixin
 if TYPE_CHECKING:
     from app.db.models.identity import User
 
-TICKET_CATEGORIES = ("claim", "payment", "policy_change", "login", "general")
+TICKET_CATEGORIES = (
+    "claim", "payment", "policy_change", "login", "general",
+    "renewal", "callback", "policy_query", "claim_help",
+    "quotation", "policy_correction", "endorsement",
+)
 TICKET_PRIORITIES = ("low", "medium", "high", "urgent")
 TICKET_STATUSES = ("open", "in_progress", "resolved", "closed")
 
@@ -63,6 +67,18 @@ class SupportTicket(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         nullable=True,
     )
     category: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Call-back requests: when the client wants the advisor to call, the
+    # insurance type a quotation is for, and an attached document (an
+    # endorsement copy the client already has).
+    preferred_callback_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    insurance_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    document_file_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("stored_files.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     priority: Mapped[str | None] = mapped_column(String(16), nullable=True)
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, server_default=text("'open'")
@@ -82,7 +98,8 @@ class SupportTicket(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         CheckConstraint(
             "category IS NULL OR category IN "
             "('claim', 'payment', 'policy_change', 'login', 'general', "
-            "'renewal', 'callback', 'policy_query', 'claim_help')",
+            "'renewal', 'callback', 'policy_query', 'claim_help', "
+            "'quotation', 'policy_correction', 'endorsement')",
             name="support_tickets_category_valid",
         ),
         CheckConstraint(
