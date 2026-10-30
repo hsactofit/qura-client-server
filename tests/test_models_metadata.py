@@ -124,12 +124,15 @@ def test_unique_constraints_present() -> None:
 
 
 def test_partial_unique_index_on_policy_number() -> None:
+    """A policy number is unique per client (not across clients)."""
     policies = Base.metadata.tables["policies"]
     idx = {i.name: i for i in policies.indexes}
-    assert "uq_policies_policy_number" in idx
-    assert idx["uq_policies_policy_number"].unique is True
+    assert "uq_policies_policy_number" not in idx
+    index = idx["uq_policies_user_policy_number"]
+    assert index.unique is True
+    assert [c.name for c in index.columns] == ["user_id", "policy_number"]
     # Partial predicate present (policy_number IS NOT NULL).
-    assert idx["uq_policies_policy_number"].dialect_options["postgresql"]["where"] is not None
+    assert index.dialect_options["postgresql"]["where"] is not None
 
 
 def test_check_constraints_present() -> None:

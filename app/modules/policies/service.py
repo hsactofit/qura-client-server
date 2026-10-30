@@ -20,6 +20,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import storage
@@ -90,10 +91,14 @@ def _to_date(value: Any) -> date | None:
         return None
 
 
-def _clean_str(value: Any) -> str | None:
+def _clean_str(value: Any, max_len: int | None = None) -> str | None:
+    """Trimmed text, or None; cut to ``max_len`` so it always fits its column
+    (AI extraction can return longer values than the database accepts)."""
     if value is None:
         return None
     text = str(value).strip()
+    if max_len is not None:
+        text = text[:max_len].strip()
     return text or None
 
 
@@ -258,15 +263,15 @@ async def upload_policy(
         for field in extraction.EXTRACTION_FIELDS
     }
 
-    policy_number = _clean_str(merged.get("policy_number"))
+    policy_number = _clean_str(merged.get("policy_number"), 100)
     coverage_amount = _to_decimal(merged.get("coverage_amount"))
     premium_amount = _to_decimal(merged.get("premium_amount"))
     start_date = _to_date(merged.get("start_date"))
     end_date = _to_date(merged.get("end_date"))
 
     # Validate required fields and date sanity before any write.
-    policy_type = _clean_str(merged.get("policy_type"))
-    insurer_name = _clean_str(merged.get("insurer_name"))
+    policy_type = _clean_str(merged.get("policy_type"), 50)
+    insurer_name = _clean_str(merged.get("insurer_name"), 200)
     if not policy_type:
         raise ApiError("Policy type is required", status_code=422)
     if not insurer_name:
@@ -279,9 +284,16 @@ async def upload_policy(
     storage_key: str | None = None
     sha256: str | None = None
     if document is not None:
-        storage_key, sha256, size = storage.save_bytes(
-            settings, purpose="policy", original_name=original_name, data=document
-        )
+        try:
+            storage_key, sha256, size = storage.save_bytes(
+                settings, purpose="policy", original_name=original_name, data=document
+            )
+        except storage.StorageError as exc:
+            logger.error("Policy document could not be stored: %s", exc)
+            raise ApiError(
+                "We couldn't save your document right now. Please try again shortly.",
+                status_code=503,
+            ) from exc
 
     try:
         duplicate = await _find_duplicate(
@@ -318,12 +330,12 @@ async def upload_policy(
             insurer_name=insurer_name,
             coverage_amount=coverage_amount,
             premium_amount=premium_amount,
-            premium_frequency=_clean_str(merged.get("premium_frequency")),
+            premium_frequency=_clean_str(merged.get("premium_frequency"), 20),
             start_date=start_date,
             end_date=end_date,
             status="active",
-            nominee_name=_clean_str(merged.get("nominee_name")),
-            nominee_relationship=_clean_str(merged.get("nominee_relationship")),
+            nominee_name=_clean_str(merged.get("nominee_name"), 200),
+            nominee_relationship=_clean_str(merged.get("nominee_relationship"), 50),
             policy_source="uploaded",
             verification_status="self_reported",
             benefits=extracted.get("benefits") or [],
@@ -333,7 +345,16 @@ async def upload_policy(
             document_file_id=stored_file.id if stored_file is not None else None,
         )
         session.add(policy)
-        await session.flush()
+        try:
+            await session.flush()
+        except IntegrityError as exc:
+            # A constraint the duplicate check above didn't foresee: answer with
+            # a message the client can act on instead of a server error.
+            logger.warning("Policy upload conflict: %s", type(exc.orig).__name__)
+            raise ApiError(
+                "This policy is already on your account. Check My Policies.",
+                status_code=409,
+            ) from exc
     except Exception:
         # Compensation: the request will roll back the transaction, but the
         # written file lives outside it — remove it so storage doesn't leak.

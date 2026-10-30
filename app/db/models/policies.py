@@ -139,9 +139,11 @@ class Policy(UUIDPrimaryKeyMixin, TimestampMixin, Base):
             "'insurer_verified')",
             name="policies_verification_status_valid",
         ),
-        # policy_number unique only when present (platform policies start null).
+        # A client holds a policy number once; two clients may share one (a
+        # family floater). Only when present (platform policies start null).
         Index(
-            "uq_policies_policy_number",
+            "uq_policies_user_policy_number",
+            "user_id",
             "policy_number",
             unique=True,
             postgresql_where=text("policy_number IS NOT NULL"),

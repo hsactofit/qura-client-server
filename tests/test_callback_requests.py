@@ -298,3 +298,58 @@ async def test_status_pull_resolves_unless_client_came_back() -> None:
     assert done.status == "resolved"
     assert back.status == "open"  # the CRM opens a follow-up task instead
     assert len(session.added) == 1  # one "resolved" notification
+
+
+# --- policy upload must never 500 on data conflicts -------------------------
+
+
+def test_same_policy_number_on_two_accounts_uploads(db_client, store) -> None:
+    other = seed_user(store, "b@quramail.io")
+    _policy(store, other, number="FLOATER-1")  # e.g. a spouse's copy of a family floater
+    _, headers = _auth(db_client, store)
+    resp = db_client.post(
+        "/api/client/policies/upload",
+        headers=headers,
+        data={"policy_number": "FLOATER-1", "policy_type": "health", "insurer_name": "Care"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["data"]["duplicate"] is False
+
+
+def test_upload_conflict_is_409_not_500(db_client, store, monkeypatch) -> None:
+    from sqlalchemy.exc import IntegrityError
+
+    from tests.fakes import FakeSession
+
+    _, headers = _auth(db_client, store)
+
+    async def _conflict(self):  # type: ignore[no-untyped-def]
+        raise IntegrityError("insert", params=None, orig=Exception("unique"))
+
+    monkeypatch.setattr(FakeSession, "flush", _conflict)
+    resp = db_client.post(
+        "/api/client/policies/upload",
+        headers=headers,
+        data={"policy_number": "X-1", "policy_type": "motor", "insurer_name": "ICICI"},
+    )
+    assert resp.status_code == 409
+    assert "already on your account" in resp.json()["message"]
+
+
+def test_upload_clamps_long_extracted_values(db_client, store) -> None:
+    _, headers = _auth(db_client, store)
+    resp = db_client.post(
+        "/api/client/policies/upload",
+        headers=headers,
+        data={
+            "policy_number": "P" * 150,
+            "policy_type": "health",
+            "insurer_name": "I" * 300,
+            "premium_frequency": "annually, paid by auto-debit",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    saved = store.data[Policy][-1]
+    assert len(saved.policy_number) == 100
+    assert len(saved.insurer_name) == 200
+    assert len(saved.premium_frequency) <= 20

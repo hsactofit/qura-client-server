@@ -190,11 +190,12 @@ async def _find_target(session: AsyncSession, row: Any) -> Policy | None:
 
 
 async def _policy_number_taken(
-    session: AsyncSession, number: str | None, own_id: uuid.UUID | None
+    session: AsyncSession, user_id: Any, number: str | None, own_id: uuid.UUID | None
 ) -> bool:
+    """True when this client already has another policy with this number."""
     if not number:
         return False
-    stmt = select(Policy.id).where(Policy.policy_number == number)
+    stmt = select(Policy.id).where(Policy.user_id == user_id, Policy.policy_number == number)
     if own_id is not None:
         stmt = stmt.where(Policy.id != own_id)
     return (await session.execute(stmt.limit(1))).first() is not None
@@ -238,7 +239,7 @@ async def _apply_policy(session: AsyncSession, row: Any) -> None:
     # The client's own upload keeps its values until an advisor verifies it;
     # advisor-added policies always mirror the CRM.
     if created or verified or not client_originated:
-        if await _policy_number_taken(session, fields["policy_number"], target.id):
+        if await _policy_number_taken(session, user_id, fields["policy_number"], target.id):
             logger.warning("crm sync: policy number already used; kept the old one")
             fields.pop("policy_number")
         for key, value in fields.items():
