@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import operator
 import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 from app.db.models.assets import Asset
@@ -245,6 +246,12 @@ class FakeSession:
         dupes = {e for e in emails if emails.count(e) > 1}
         if dupes:
             raise IntegrityError("duplicate email", params=None, orig=Exception())
+
+    async def refresh(self, obj: Any, attribute_names: Any = None) -> None:
+        # Emulate reloading server-set columns after a flush: the database
+        # stamps updated_at (onupdate=func.now()) on every UPDATE.
+        if attribute_names is None or "updated_at" in attribute_names:
+            obj.updated_at = datetime.now(UTC)
 
     async def commit(self) -> None:
         return None

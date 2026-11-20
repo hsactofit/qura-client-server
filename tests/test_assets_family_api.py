@@ -48,6 +48,25 @@ def test_create_asset_invalid_type_rejected(db_client, store) -> None:
     assert resp.status_code == 422
 
 
+def test_update_own_asset(db_client, store) -> None:
+    # Regression: PUT used to answer 500 because the reply read the expired
+    # updated_at after flush on the async session. The service must reload it.
+    a = seed_user(store, "a@quramail.io")
+    asset = Asset(user_id=a.id, asset_type="car", model="Old")
+    store.seed(asset)
+    csrf = signin(db_client, "a@quramail.io")
+    resp = db_client.put(
+        f"/api/client/assets/{asset.id}",
+        headers={"X-CSRF-Token": csrf},
+        json={"asset_type": "car", "model": "New"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()["data"]
+    assert data["model"] == "New"
+    assert data["updated_at"] is not None
+    assert db_client.get("/api/client/assets").json()["data"][0]["model"] == "New"
+
+
 def test_update_other_users_asset_is_404(db_client, store) -> None:
     seed_user(store, "a@quramail.io")
     b = seed_user(store, "b@quramail.io")
