@@ -57,6 +57,11 @@ async def update_asset(
     asset = await get_asset(session, user_id, asset_id)
     _apply(asset, body)
     await session.flush()
+    # The flush sets updated_at in the database (onupdate=func.now()) and
+    # expires it on the object. Reading it later in asset_to_dict would then
+    # lazy-load on the async session and fail (500, update rolled back), so
+    # load the new value here.
+    await session.refresh(asset, attribute_names=["updated_at"])
     return asset
 
 
