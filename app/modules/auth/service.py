@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.core.errors import ApiError
+from app.core.firebase_tokens import VerifiedIdentity
 from app.core.passwords import hash_password, verify_password
 from app.core.tokens import generate_raw_token, hash_token
 from app.db.models.identity import Invite, PasswordResetToken, User, UserProfile
@@ -154,6 +155,52 @@ async def authenticate(session: AsyncSession, email: str, password: str) -> User
         raise ApiError(_GENERIC_AUTH_ERROR, status_code=401)
 
     return user
+
+
+async def social_sign_in(
+    session: AsyncSession, identity: VerifiedIdentity, full_name: str | None
+) -> tuple[User, bool]:
+    """Sign in, or create a client account, for a verified Google/Apple identity.
+
+    Returns ``(user, created)``. An existing account is matched by email only
+    when the provider has verified that email, so nobody can take over an
+    account with an unverified address. New accounts are always role ``USER``
+    with no password (they can set one later via forgot-password).
+    """
+    if not identity.email_verified:
+        raise ApiError(
+            "Your Google or Apple email isn't verified. Please verify it, or sign in with email.",
+            status_code=401,
+        )
+    email = normalize_email(identity.email)
+    user = await get_user_by_email(session, email)
+    if user is not None:
+        if user.is_deleted or user.status != "ACTIVE":
+            raise ApiError(
+                "This account can't sign in. Please contact QURA support.", status_code=403
+            )
+        return user, False
+
+    name = full_name or identity.name
+    if name and ("<" in name or ">" in name):
+        name = None
+    user = User(
+        email=email,
+        password_hash=None,
+        full_name=name,
+        role="USER",
+        status="ACTIVE",
+    )
+    session.add(user)
+    try:
+        await session.flush()
+    except IntegrityError as exc:
+        # A concurrent sign-up for the same email won the race.
+        await session.rollback()
+        raise ApiError("Please try signing in again.", status_code=409) from exc
+    session.add(UserProfile(user_id=user.id))
+    await session.flush()
+    return user, True
 
 
 async def revoke_all_sessions(session: AsyncSession, user: User) -> None:
