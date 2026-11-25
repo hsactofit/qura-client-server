@@ -67,3 +67,11 @@ def test_safe_summary_redacts_sensitive_fields() -> None:
     assert summary["database_url"] == "***redacted***"
     # Non-sensitive values remain visible.
     assert summary["app_name"] == settings.app_name
+
+
+def test_firebase_project_defaults_to_the_live_app_and_can_be_disabled(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Google / Apple / mobile sign-in work without extra setup; "" turns them off."""
+    monkeypatch.delenv("QURA_FIREBASE_PROJECT_ID", raising=False)
+    assert Settings(_env_file=None).firebase_project_id == "qura-insure"  # type: ignore[call-arg]
+    monkeypatch.setenv("QURA_FIREBASE_PROJECT_ID", "")
+    assert Settings(_env_file=None).firebase_project_id == ""  # type: ignore[call-arg]
