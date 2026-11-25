@@ -3,6 +3,7 @@
 Paths match the existing frontend contract:
   GET   /user/profile
   PUT   /user/profile/update
+  POST  /user/phone/verify          verify the mobile number with an SMS code
   GET   /user/settings
   PUT   /user/settings
   POST  /user/avatar                upload/replace the profile picture
@@ -26,10 +27,13 @@ from fastapi import APIRouter, Depends, File, Form, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import firebase_tokens
 from app.core.config import Settings, get_settings
 from app.core.envelope import success
 from app.core.security import CurrentUser, enforce_csrf, require_authenticated
 from app.db.session import get_session
+from app.modules.auth import service as auth_service
+from app.modules.auth.schemas import PhoneTokenRequest
 from app.modules.profile import service, uploads
 from app.modules.profile.schemas import UpdateProfileRequest, UpdateSettingsRequest
 from app.modules.users_mapping import user_to_dict
@@ -60,6 +64,29 @@ async def update_profile(
     return success(
         user_to_dict(db_user, profile, uploads.kyc_documents_summary(kyc)),
         "Profile updated",
+    )
+
+
+@router.post("/phone/verify")
+async def verify_phone(
+    body: PhoneTokenRequest,
+    _csrf: None = Depends(enforce_csrf),
+    user: CurrentUser = Depends(require_authenticated),
+    session: AsyncSession = Depends(get_session),
+    settings: Settings = Depends(get_settings),
+) -> dict:
+    """Prove the mobile number with a Firebase Phone Auth ID token. The number
+    in the token becomes this account's verified mobile, usable for sign-in."""
+    identity = await firebase_tokens.verify_or_raise(
+        body.id_token, settings.firebase_project_id, "phone"
+    )
+    db_user = await service.load_user(session, user.id)
+    await auth_service.verify_phone(session, db_user, identity)
+    profile = await service.load_profile(session, user.id)
+    kyc = await uploads.list_kyc_documents(session, user.id)
+    return success(
+        user_to_dict(db_user, profile, uploads.kyc_documents_summary(kyc)),
+        "Mobile number verified",
     )
 
 

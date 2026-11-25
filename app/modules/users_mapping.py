@@ -65,6 +65,7 @@ def user_to_dict(
         "email": user.email,
         "full_name": user.full_name,
         "phone": user.phone,
+        "phone_verified": user.phone is not None and user.phone_verified_at is not None,
         "photo_url": _photo_url(user.photo_url),
         "address": user.address,
         "role": user.role,

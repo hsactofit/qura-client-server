@@ -167,7 +167,7 @@ async def social_sign_in(
     account with an unverified address. New accounts are always role ``USER``
     with no password (they can set one later via forgot-password).
     """
-    if not identity.email_verified:
+    if not identity.email_verified or identity.email is None:
         raise ApiError(
             "Your Google or Apple email isn't verified. Please verify it, or sign in with email.",
             status_code=401,
@@ -201,6 +201,68 @@ async def social_sign_in(
     session.add(UserProfile(user_id=user.id))
     await session.flush()
     return user, True
+
+
+async def get_user_by_phone(session: AsyncSession, phone: str) -> User | None:
+    result = await session.execute(select(User).where(User.phone == phone))
+    return result.scalar_one_or_none()
+
+
+def _phone_from(identity: VerifiedIdentity) -> str:
+    """The E.164 number proven by a phone sign-in token, in our stored format."""
+    try:
+        phone = normalize_mobile(identity.phone)
+    except ApiError as exc:
+        # Firebase proved a number we do not serve (e.g. not Indian).
+        raise ApiError("Please use an Indian mobile number.", status_code=422) from exc
+    if phone is None:
+        raise ApiError("Sign-in could not be verified. Please try again.", status_code=401)
+    return phone
+
+
+async def phone_sign_in(session: AsyncSession, identity: VerifiedIdentity) -> User:
+    """Sign in with a mobile number proven by an SMS code.
+
+    Only an account that has already verified this number can sign in with
+    it. A number that was only typed in (at sign-up or in the profile) is not
+    enough: it may have been mistyped, and its real owner must not get into
+    someone else's account. No account is created here, because every QURA
+    account needs an email; new clients sign up with email first.
+    """
+    phone = _phone_from(identity)
+    user = await get_user_by_phone(session, phone)
+    if user is None or user.phone_verified_at is None:
+        raise ApiError(
+            "This number isn't linked to a QURA account yet. Sign in with your email, "
+            "then verify your number in your profile to use it next time.",
+            status_code=404,
+        )
+    if user.is_deleted or user.status != "ACTIVE":
+        raise ApiError("This account can't sign in. Please contact QURA support.", status_code=403)
+    return user
+
+
+async def verify_phone(session: AsyncSession, user: User, identity: VerifiedIdentity) -> User:
+    """Mark the number proven by an SMS code as this signed-in user's verified
+    mobile, replacing whatever number they had typed in.
+
+    A number already verified by another account stays with that account
+    (409). If another account had only typed this number in, the proof wins:
+    that unverified copy is removed so the number can belong to its owner.
+    """
+    phone = _phone_from(identity)
+    other = await get_user_by_phone(session, phone)
+    if other is not None and other.id != user.id:
+        if other.phone_verified_at is not None:
+            raise ApiError(
+                "This number is already linked to another QURA account.", status_code=409
+            )
+        other.phone = None
+        await session.flush()
+    user.phone = phone
+    user.phone_verified_at = datetime.now(UTC)
+    await session.flush()
+    return user
 
 
 async def revoke_all_sessions(session: AsyncSession, user: User) -> None:

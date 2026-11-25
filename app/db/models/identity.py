@@ -63,6 +63,12 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     password_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
     full_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     phone: Mapped[str | None] = mapped_column(String(20), nullable=True, unique=True)
+    # Set when the person proved they own ``phone`` with an SMS code (Firebase
+    # Phone Auth). Only a verified number can be used to sign in; changing the
+    # number clears it.
+    phone_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     role: Mapped[str] = mapped_column(
         String(16), nullable=False, server_default=text("'USER'")
     )
