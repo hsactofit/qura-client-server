@@ -16,14 +16,17 @@ CSRF token in the JSON so the SPA can echo it immediately.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import firebase_tokens
 from app.core.config import Settings, get_settings
 from app.core.cookies import clear_auth_cookies, set_csrf_cookie, set_session_cookie
 from app.core.envelope import success
+from app.core.errors import ApiError
 from app.core.security import CurrentUser, enforce_csrf, require_authenticated
 from app.core.sessions import generate_csrf_token, issue_session_token
 from app.db.session import get_session
@@ -33,6 +36,7 @@ from app.modules.auth.schemas import (
     ResetPasswordRequest,
     SignInRequest,
     SignUpRequest,
+    SocialSignInRequest,
     VerifyInviteRequest,
 )
 from app.modules.auth.service import _load_profile
@@ -92,6 +96,52 @@ async def signin(
     )
 
 
+@router.post("/social")
+async def social_signin(
+    body: SocialSignInRequest,
+    response: Response,
+    session: AsyncSession = Depends(get_session),
+    settings: Settings = Depends(get_settings),
+) -> dict:
+    """Google / Apple sign-in with a Firebase ID token.
+
+    Signs in the account with the token's verified email, or creates a client
+    account for it. Issues the same session + CSRF cookies as /signin.
+    """
+    try:
+        # Key fetch may hit the network; keep it off the event loop.
+        identity = await asyncio.to_thread(
+            firebase_tokens.verify_id_token,
+            body.id_token,
+            settings.firebase_project_id,
+            body.provider,
+        )
+    except firebase_tokens.FirebaseNotConfiguredError as exc:
+        raise ApiError(
+            "Google and Apple sign-in aren't available yet.", status_code=503
+        ) from exc
+    except firebase_tokens.FirebaseKeysUnavailableError as exc:
+        logger.warning("social sign-in: Google keys unavailable")
+        raise ApiError(
+            "Sign-in is unavailable right now. Please try again.", status_code=503
+        ) from exc
+    except firebase_tokens.InvalidSignInTokenError as exc:
+        logger.info("social sign-in rejected: %s", exc)
+        raise ApiError("Sign-in could not be verified. Please try again.", status_code=401) from exc
+
+    user, created = await service.social_sign_in(session, identity, body.full_name)
+    profile = await _load_profile(session, user.id)
+    payload = await _issue_auth(response, settings, user)
+    return success(
+        {
+            "user": user_to_dict(user, profile),
+            "csrf_token": payload["csrf_token"],
+            "created": created,
+        },
+        "Account created" if created else "Signed in",
+    )
+
+
 @router.get("/session")
 async def get_session_bootstrap(
     response: Response,
@@ -101,7 +151,6 @@ async def get_session_bootstrap(
 ) -> dict:
     # Rotate the CSRF cookie on bootstrap so the SPA always has a fresh token;
     # the session cookie is left as-is (no silent re-issue / sliding renewal).
-    from app.core.errors import ApiError
     from app.modules.auth.service import get_user_by_email  # local import avoids cycle
 
     db_user = await get_user_by_email(session, user.email)

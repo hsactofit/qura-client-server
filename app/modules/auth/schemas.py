@@ -11,7 +11,7 @@ Field names and aliases match the existing frontend contract exactly:
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
@@ -42,6 +42,20 @@ class SignInRequest(BaseModel):
 
     email: EmailStr
     password: str = Field(min_length=1, max_length=_MAX_PASSWORD_LENGTH)
+
+
+class SocialSignInRequest(BaseModel):
+    """Google / Apple sign-in. The identity comes only from ``id_token`` (a
+    Firebase ID token); ``fullName`` is just a display-name hint for new
+    accounts (Apple sends the name only to the app, not inside the token)."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    provider: Literal["google", "apple"]
+    id_token: str = Field(alias="idToken", min_length=1, max_length=8192)
+    full_name: str | None = Field(default=None, alias="fullName", max_length=200)
+
+    _v_name = field_validator("full_name")(_reject_markup)
 
 
 class VerifyInviteRequest(BaseModel):
