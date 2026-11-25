@@ -2,11 +2,13 @@
 
 Paths match the EXISTING frontend contract (src/constants/apiRoutes.ts):
   POST /auth/signup, /auth/signin, /auth/signout
+  POST /auth/social                       (Google / Apple, Firebase ID token)
+  POST /auth/phone                        (mobile number, Firebase Phone Auth)
   GET  /auth/session                      (session bootstrap)
   POST /auth/invite/verify
   POST /auth/forgot-password, /auth/reset-password
 
-CSRF policy: signup/signin/forgot/reset/invite-verify are public bootstrap
+CSRF policy: signup/signin/social/phone/forgot/reset/invite-verify are public bootstrap
 endpoints that establish or do not require a session, so the double-submit CSRF
 check does not apply (the session cookie is only issued on success). signout is
 cookie-authenticated and therefore CSRF-protected. On every successful auth the
@@ -16,7 +18,6 @@ CSRF token in the JSON so the SPA can echo it immediately.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, Response
@@ -33,6 +34,7 @@ from app.db.session import get_session
 from app.modules.auth import service
 from app.modules.auth.schemas import (
     ForgotPasswordRequest,
+    PhoneTokenRequest,
     ResetPasswordRequest,
     SignInRequest,
     SignUpRequest,
@@ -108,26 +110,9 @@ async def social_signin(
     Signs in the account with the token's verified email, or creates a client
     account for it. Issues the same session + CSRF cookies as /signin.
     """
-    try:
-        # Key fetch may hit the network; keep it off the event loop.
-        identity = await asyncio.to_thread(
-            firebase_tokens.verify_id_token,
-            body.id_token,
-            settings.firebase_project_id,
-            body.provider,
-        )
-    except firebase_tokens.FirebaseNotConfiguredError as exc:
-        raise ApiError(
-            "Google and Apple sign-in aren't available yet.", status_code=503
-        ) from exc
-    except firebase_tokens.FirebaseKeysUnavailableError as exc:
-        logger.warning("social sign-in: Google keys unavailable")
-        raise ApiError(
-            "Sign-in is unavailable right now. Please try again.", status_code=503
-        ) from exc
-    except firebase_tokens.InvalidSignInTokenError as exc:
-        logger.info("social sign-in rejected: %s", exc)
-        raise ApiError("Sign-in could not be verified. Please try again.", status_code=401) from exc
+    identity = await firebase_tokens.verify_or_raise(
+        body.id_token, settings.firebase_project_id, body.provider
+    )
 
     user, created = await service.social_sign_in(session, identity, body.full_name)
     profile = await _load_profile(session, user.id)
@@ -139,6 +124,31 @@ async def social_signin(
             "created": created,
         },
         "Account created" if created else "Signed in",
+    )
+
+
+@router.post("/phone")
+async def phone_signin(
+    body: PhoneTokenRequest,
+    response: Response,
+    session: AsyncSession = Depends(get_session),
+    settings: Settings = Depends(get_settings),
+) -> dict:
+    """Mobile-number sign-in with a Firebase Phone Auth ID token.
+
+    Firebase sends and checks the SMS code; this verifies the resulting token
+    and signs in the account that has verified that number. Issues the same
+    session + CSRF cookies as /signin.
+    """
+    identity = await firebase_tokens.verify_or_raise(
+        body.id_token, settings.firebase_project_id, "phone"
+    )
+    user = await service.phone_sign_in(session, identity)
+    profile = await _load_profile(session, user.id)
+    payload = await _issue_auth(response, settings, user)
+    return success(
+        {"user": user_to_dict(user, profile), "csrf_token": payload["csrf_token"]},
+        "Signed in",
     )
 
 

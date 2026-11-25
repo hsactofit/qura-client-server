@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import ApiError
 from app.db.models.identity import User, UserProfile, UserSetting
+from app.modules.auth.service import get_user_by_phone, normalize_mobile
 from app.modules.profile.schemas import UpdateProfileRequest, UpdateSettingsRequest
 
 
@@ -73,7 +74,18 @@ async def update_profile(
     if "full_name" in provided:
         user.full_name = body.full_name
     if "phone" in provided:
-        user.phone = body.phone
+        new_phone = normalize_mobile(body.phone)
+        if new_phone != user.phone:
+            if new_phone is not None:
+                other = await get_user_by_phone(session, new_phone)
+                if other is not None and other.id != user.id:
+                    raise ApiError(
+                        "This number is already linked to another QURA account.",
+                        status_code=409,
+                    )
+            user.phone = new_phone
+            # A new number has not been proved yet.
+            user.phone_verified_at = None
     if "address" in provided:
         user.address = body.address
     if "photo_url" in provided:
