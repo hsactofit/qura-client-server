@@ -58,6 +58,15 @@ class SocialSignInRequest(BaseModel):
     _v_name = field_validator("full_name")(_reject_markup)
 
 
+class PhoneTokenRequest(BaseModel):
+    """Mobile-number sign-in or verification. The number comes only from
+    ``id_token`` (a Firebase ID token from Phone Auth), never the body."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    id_token: str = Field(alias="idToken", min_length=1, max_length=8192)
+
+
 class VerifyInviteRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
