@@ -87,10 +87,12 @@ class Settings(BaseSettings):
     session_max_age_seconds: int = 7 * 24 * 60 * 60
     # Password-reset token time-to-live. Default 30 minutes.
     password_reset_ttl_seconds: int = 30 * 60
-    # Firebase project id of the QURA mobile app (Google / Apple sign-in).
-    # Must equal PROJECT_ID in the app's google-services.json /
-    # GoogleService-Info.plist. Empty disables social sign-in (503).
-    firebase_project_id: str = ""
+    # Firebase project id of the QURA mobile app (Google / Apple / mobile-number
+    # sign-in). Must equal PROJECT_ID in the app's google-services.json /
+    # GoogleService-Info.plist. It is public (it ships inside the app), so the
+    # live project is the default; QURA_FIREBASE_PROJECT_ID="" disables these
+    # sign-ins (503).
+    firebase_project_id: str = "qura-insure"
 
     # --- CORS --------------------------------------------------------------
     # Explicit allow-list only; no wildcard when credentials are enabled.

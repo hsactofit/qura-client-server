@@ -327,7 +327,7 @@ All variables use the `QURA_` prefix. See `.env.example` for the full list. Key 
 | `QURA_CSRF_COOKIE_NAME` | CSRF cookie name | Defaults to `qura_client_csrf` (the name the frontend already reads). |
 | `QURA_SESSION_MAX_AGE_SECONDS` | Session lifetime / cookie max-age | Defaults to 7 days. |
 | `QURA_PASSWORD_RESET_TTL_SECONDS` | Reset-token time-to-live | Defaults to 30 minutes. |
-| `QURA_FIREBASE_PROJECT_ID` | Firebase project of the QURA mobile app | Enables `POST /api/client/auth/social` (Google / Apple sign-in), `POST /api/client/auth/phone` (mobile-number sign-in) and `POST /api/client/user/phone/verify`. The SMS codes are sent and checked by Firebase Phone Auth; only a number the client has verified can sign in. Tokens are checked against Google's public keys; no service account needed. Empty returns 503. |
+| `QURA_FIREBASE_PROJECT_ID` | Firebase project of the QURA mobile app | Enables `POST /api/client/auth/social` (Google / Apple sign-in), `POST /api/client/auth/phone` (mobile-number sign-in) and `POST /api/client/user/phone/verify`. The SMS codes are sent and checked by Firebase Phone Auth; only a number the client has verified can sign in. Tokens are checked against Google's public keys; no service account needed. Defaults to `qura-insure`, the live app's project (public, it ships in the app); set it empty to disable (503). |
 | `QURA_CORS_ALLOW_ORIGINS` | Comma-separated allow-list | Empty disables CORS. Same-origin routing is planned. |
 | `QURA_LOG_LEVEL` / `QURA_LOG_JSON` | Logging | JSON logs by default; sensitive values are redacted. |
 
